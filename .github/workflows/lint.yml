@@ -1,0 +1,46 @@
+name: Lint
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    name: Run on Ubuntu
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.24
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Install tools (controller-gen, kustomize)
+        run: |
+          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.18.0
+          go install sigs.k8s.io/kustomize/kustomize/v5@v5.4.3
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+
+      - name: Setup envtest
+        run: |
+          go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+          echo "$HOME/go/bin" >> $GITHUB_PATH
+          K8S_VERSION="1.33.0"
+          echo "KUBEBUILDER_ASSETS=$(setup-envtest use ${K8S_VERSION} -p path)" >> $GITHUB_ENV
+
+      - name: Run linter
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.1.6

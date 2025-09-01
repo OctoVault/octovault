@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- octovault_v1alpha1_octorepository.yaml
+- octovault_v1alpha1_octovault.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,0 +1,12 @@
+apiVersion: octovault.it/v1alpha1
+kind: OctoVault
+metadata:
+  name: configmap-test
+  namespace: devops
+spec:
+  octoRepositoryRef:
+    name: octorepository-sample
+  repository: octovault/octovault
+  path: /test/resources/config-values.yaml
+  targetName: my-configmap
+  pollInterval: 1m

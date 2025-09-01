@@ -1,0 +1,12 @@
+apiVersion: octovault.it/v1alpha1
+kind: OctoVault
+metadata:
+  name: fail-test
+  namespace: devops
+spec:
+  octoRepositoryRef:
+    name: octorepository-sample                 # 같은 네임스페이스의 OctoRepository
+  repository: octovault/octovault
+  path: /test/resources/fail-values.yaml
+  targetName: my-configmap
+  pollInterval: 1m

@@ -1,0 +1,75 @@
+name: Delivery Helm Chart to GitHub Container Registry
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  test_and_delivery:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0
+
+      - name: "Get Chart Version"
+        if: steps.validate_chart.outputs.stop == ''
+        id: "get_chart_version"
+        uses: mikefarah/yq@master
+        with:
+          cmd: yq '.version' charts/octovault/Chart.yaml
+
+      - name: "Validate Charts"
+        id: "validate_chart"
+        env:
+          RELEASE_TAG: ${{ github.ref_name || github.event.release.tag_name }}
+        run: |
+          chart_version="${{ steps.get_chart_version.outputs.result }}"
+
+          ref_name="${RELEASE_TAG#v}"
+          chart_version_norm="${chart_version#v}"
+
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "Release tag (normalized): ${ref_name}"
+          echo "Chart version: ${chart_version}"
+          echo "Chart version (normalized): ${chart_version_norm}"
+
+          if [ "${chart_version_norm}" != "${ref_name}" ]; then
+            echo "Chart version ${chart_version} does not match release tag ${RELEASE_TAG}"
+            exit 1
+          fi
+
+          helm template charts/octovault -f charts/octovault/values.yaml > /dev/null || echo "stop=1" >> $GITHUB_OUTPUT
+
+          echo "chart_version: ${{ steps.get_chart_version.outputs.result }}"
+
+      - name: "Fail to validate"
+        if: steps.validate_chart.outputs.stop != '0'
+        run: |
+          echo "Workflow stops because fail to validate the chart ${{ needs.extract-release-tag.outputs.chart }}"
+          
+          exit ${{ steps.validate_chart.outputs.stop }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Push Helm Chart to GitHub Container Registry
+        run: |
+          helm package charts/octovault
+          export HELM_EXPERIMENTAL_OCI=1
+
+          CHART_VERSION=$(helm show chart charts/octovault | grep '^version:' | awk '{print $2}')
+          helm push octovault-${CHART_VERSION}.tgz oci://ghcr.io/octovault

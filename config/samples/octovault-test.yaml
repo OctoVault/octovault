@@ -1,0 +1,13 @@
+apiVersion: octovault.it/v1alpha1
+kind: OctoRepository
+metadata:
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/managed-by: kustomize
+  name: octorepository-sample
+  namespace: devops
+spec:
+  # TODO(user): Add fields here
+  organization: "github.com/octovault"
+  credentialsRef:
+    name: octorepository-sample-credentials

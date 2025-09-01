@@ -1,0 +1,7 @@
+apiVersion: v2
+name: octovault
+description: OctoVault Operator (octovault.it/*) - sync ConfigMap/Secret from GitHub
+type: application
+version: 0.0.0
+appVersion: "0.0.1"
+kubeVersion: ">=1.26.0-0"

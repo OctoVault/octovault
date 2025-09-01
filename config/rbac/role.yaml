@@ -1,0 +1,48 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - events
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - octovault.it
+  resources:
+  - octorepositories
+  - octovaults
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - octovault.it
+  resources:
+  - octorepositories/finalizers
+  - octovaults/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - octovault.it
+  resources:
+  - octorepositories/status
+  - octovaults/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1,0 +1,70 @@
+image:
+  repository: octovault/octovault
+#  tag: "0.0.1"
+  pullPolicy: IfNotPresent
+imagePullSecrets: [] # e.g. [{ name: regcred }]
+
+nameOverride: "octovault"
+fullnameOverride: "octovault"
+
+replicaCount: 1
+leaderElection:
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: "octovault-controller-manager" # 빈 값이면 fullname 사용
+  annotations: {} # IRSA 예: { eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role> }
+
+rbac:
+  create: true
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Controller flags
+controller:
+  metrics:
+    enabled: true
+    secure: true           # true -> :8443(HTTPS), false -> :8080(HTTP)
+    port: 8443
+  probes:
+    healthz: ":8081"
+  enableHTTP2: false
+  extraArgs: []            # 추가 플래그
+  env:
+    # OctoRepository 폴링 주기(컨트롤러가 읽는 ENV)
+    OVO_OCTOREPO_POLL_INTERVAL: "3m"
+    OVO_GIT_API_URL: "https://api.github.com"
+    OVO_GIT_REF: "main" # empty if you want to use default branch
+    # Aws Secret Manager Configuration
+    OVO_AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
+    OVO_AWS_SM_TTL: "3m"
+
+  extraEnv: []             # [{name: FOO, value: BAR}, ...]
+  extraVolumeMounts: []
+  extraVolumes: []
+
+# 선택: Prometheus Operator ServiceMonitor
+prometheus:
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+    scheme: https # metrics.secure=true 권장
+    tlsConfig: {} # 필요 시 k8s tls secret 참조
+
+# (옵션) 메트릭 서버에 제공할 인증서가 있다면 Secret로 주입
+metrics:
+  existingSecret: ""     # e.g. octovault-metrics-tls (keys: tls.crt, tls.key)
+  certPath: "/certs"     # 컨테이너 마운트 경로
