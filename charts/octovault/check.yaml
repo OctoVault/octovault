@@ -1,0 +1,211 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: octovault-operator/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: octovault-controller-manager
+  namespace: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::387995950663:role/eks-octovault-irsa
+---
+# Source: octovault-operator/templates/clusterrole.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: octovault
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  # CRDs: OctoRepository / OctoVault
+  - apiGroups: ["octovault.it"]
+    resources:
+      - octorepositories
+      - octorepositories/status
+      - octorepositories/finalizers
+      - octovaults
+      - octovaults/status
+      - octovaults/finalizers
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  # Core: Secrets, ConfigMaps, Events
+  - apiGroups: [""]
+    resources: ["secrets","configmaps"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create","patch"]
+---
+# Source: octovault-operator/templates/clusterrolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: octovault
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: octovault-controller-manager
+    namespace: octovault-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: octovault
+---
+# Source: octovault-operator/templates/leader-election-role.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: octovault-leader-election
+  namespace: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get","list","watch","create","update","patch","delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create","patch"]
+---
+# Source: octovault-operator/templates/leader-election-rolebinding.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: octovault-leader-election
+  namespace: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+subjects:
+  - kind: ServiceAccount
+    name: octovault-controller-manager
+    namespace: octovault-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: octovault-leader-election
+---
+# Source: octovault-operator/templates/service-metrics.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: octovault-metrics
+  namespace: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+  ports:
+    - name: https-metrics
+      port: 8443
+      targetPort: 8443
+---
+# Source: octovault-operator/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: octovault
+  namespace: octovault-system
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/instance: release-name
+    app.kubernetes.io/version: "0.0.1"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: octovault
+      app.kubernetes.io/instance: release-name
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: octovault
+        app.kubernetes.io/instance: release-name
+        app.kubernetes.io/version: "0.0.1"
+        app.kubernetes.io/managed-by: Helm
+    spec:
+      serviceAccountName: octovault-controller-manager
+      containers:
+        - name: manager
+          image: "octovault/octovault:0.0.1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--leader-elect=true"
+            - "--health-probe-bind-address=:8081"
+            - "--metrics-secure=true"
+            - "--metrics-bind-address=:8443"
+            - "--enable-http2=false"
+          env:
+            - name: OVO_OCTOREPO_POLL_INTERVAL
+              value: "1m"
+          ports:
+            - name: healthz
+              containerPort: 8081
+            - name: https-metrics
+              containerPort: 8443
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: healthz
+          resources:
+            limits:
+              cpu: 250m
+              memory: 256Mi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+          volumeMounts:
+      volumes:
+      tolerations:
+        - effect: NoSchedule
+          key: connexioh.com/behaviour
+          operator: Equal
+          value: backoffice
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: connexioh.com/behaviour
+                operator: In
+                values:
+                - backoffice

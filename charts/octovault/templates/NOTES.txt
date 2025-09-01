@@ -1,0 +1,15 @@
+Thanks for installing OctoVault Operator! 🎉
+
+CRDs:
+  kubectl get crd | grep octovault.it
+
+Controller:
+  kubectl -n {{ .Release.Namespace }} get deploy {{ include "octovault.fullname" . }} -o wide
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "octovault.fullname" . }} -f
+
+Metrics:
+  {{- if .Values.controller.metrics.enabled }}
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "octovault.fullname" . }}-metrics
+  {{- else }}
+  Metrics endpoint disabled (controller.metrics.enabled=false)
+  {{- end }}

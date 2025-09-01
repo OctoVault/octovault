@@ -1,0 +1,8 @@
+metadata:
+  type: ConfigMap
+spec:
+  data:
+    - key: my-key
+      value: hello
+    - key: my-key-2
+      value: world

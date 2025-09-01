@@ -1,0 +1,29 @@
+{{- if and .Values.controller.metrics.enabled .Values.prometheus.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "octovault.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "octovault.labels" . | nindent 4 }}
+    {{- toYaml .Values.prometheus.serviceMonitor.labels | nindent 4 }}
+spec:
+  endpoints:
+    - port: {{ ternary "https-metrics" "http-metrics" .Values.controller.metrics.secure }}
+      interval: {{ .Values.prometheus.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.prometheus.serviceMonitor.scrapeTimeout }}
+      {{- if .Values.controller.metrics.secure }}
+      scheme: {{ .Values.prometheus.serviceMonitor.scheme }}
+      {{- with .Values.prometheus.serviceMonitor.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "octovault.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+{{- end }}

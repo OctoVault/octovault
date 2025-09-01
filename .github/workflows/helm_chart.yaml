@@ -1,0 +1,67 @@
+name: Delivery Helm Chart to GitHub Container Registry
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  test_and_delivery:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: v3.12.0
+
+      - name: "Get Chart Version"
+        if: steps.validate_chart.outputs.stop == ''
+        id: "get_chart_version"
+        uses: mikefarah/yq@master
+        with:
+          cmd: yq '.version' charts/octovault/Chart.yaml
+
+      - name: "Validate Charts"
+        id: "validate_chart"
+        run: |
+          github_ref=${{ github.event.ref }}
+          ref_name=${github_ref#refs/tags/}
+          
+          echo "Release tag: $ref_name"
+          
+          if [ "${{ steps.get_chart_version.outputs.result }}" != "${ref_name}" ]; then
+            echo "Chart version ${{ steps.get_chart_version.outputs.result }} does not match release tag ${ref_name}"
+            exit 1
+          fi
+          
+          helm template charts/octovault -f charts/octovault/test-values.yaml > /dev/null || echo "stop=1" >> $GITHUB_OUTPUT
+
+          echo "chart_version: ${{ steps.get_chart_version.outputs.result }}"
+
+      - name: "Fail to validate"
+        if: steps.validate_chart.outputs.stop != '0'
+        run: |
+          echo "Workflow stops because fail to validate the chart ${{ needs.extract-release-tag.outputs.chart }}"
+          
+          exit ${{ steps.validate_chart.outputs.stop }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: octovault
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Helm Chart to GitHub Container Registry
+        run: |
+          helm package charts/octovault
+          export HELM_EXPERIMENTAL_OCI=1
+
+          CHART_VERSION=$(helm show chart charts/octovault | grep '^version:' | awk '{print $2}')
+          helm push octovault-${CHART_VERSION}.tgz oci://ghcr.io/octovault
