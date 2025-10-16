@@ -1,0 +1,11 @@
+apiVersion: octovault.it/v1alpha1
+kind: OctoRepository
+metadata:
+  labels:
+    app.kubernetes.io/name: octovault
+    app.kubernetes.io/managed-by: kustomize
+  name: octorepository-sample
+spec:
+  organization: github.com/catze-labs
+  credentialsRef:
+    name: octorepository-sample-credentials
