@@ -78,11 +78,11 @@ func main() {
 	var tlsOpts []func(*tls.Config)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
-		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
+			"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
+				"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -122,7 +122,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	ovMaxWorkers := resolveWorkers(maxWorkers, "OVO_OV_MAX_CONCURRENT", 1)
+	ovMaxWorkers := resolveWorkers(maxWorkers, "MAX_WORKERS", 1)
 
 	// Create watchers for metrics and webhooks certificates
 	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
@@ -293,8 +293,8 @@ func main() {
 
 	gitUA := "octovault-operator"
 
-	gitBase := os.Getenv("OVO_GIT_API_URL") // 비우면 자동으로 https://api.github.com
-	gitRef := os.Getenv("OVO_GIT_REF")      // 비우면 디폴트 브랜치
+	gitBase := os.Getenv("GIT_API_URL") // 비우면 자동으로 https://api.github.com
+	gitRef := os.Getenv("GIT_REF")      // 비우면 디폴트 브랜치
 
 	gitFetcher := github.NewFetcher(github.Options{
 		BaseURL:        gitBase,
@@ -304,13 +304,13 @@ func main() {
 		UserAgent:      gitUA,
 	})
 
-	region := os.Getenv("OVO_AWS_REGION")
-	AwsSMTtlStr := os.Getenv("OVO_AWS_SM_TTL")
+	region := os.Getenv("AWS_REGION")
+	AwsSMTtlStr := os.Getenv("AWS_SM_TTL")
 	if AwsSMTtlStr == "" {
 
 		AwsSMTtlStr = "1m"
 	}
-	AwsPSTtlStr := os.Getenv("OVO_AWS_PS_TTL")
+	AwsPSTtlStr := os.Getenv("AWS_PS_TTL")
 	if AwsPSTtlStr == "" {
 
 		AwsPSTtlStr = "1m"

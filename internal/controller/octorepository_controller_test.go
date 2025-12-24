@@ -356,9 +356,9 @@ func TestOctoRepository_Success_Synced(t *testing.T) {
 
 // Optionally, ensure poll interval env var is respected (non-critical)
 func TestOctoRepository_PollInterval_FromEnv(t *testing.T) {
-	_ = os.Setenv("OVO_OCTOREPO_POLL_INTERVAL", "2m")
+	_ = os.Setenv("OCTOREPO_POLL_INTERVAL", "2m")
 	defer func() {
-		_ = os.Unsetenv("OVO_OCTOREPO_POLL_INTERVAL")
+		_ = os.Unsetenv("OCTOREPO_POLL_INTERVAL")
 	}()
 
 	// 이 테스트는 단순 존재 확인용으로 두고, 실제 값 비교는 생략한다.

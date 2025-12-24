@@ -234,12 +234,12 @@ controller:
     port: 8443
   enableHTTP2: false
   env:
-    OVO_OCTOREPO_POLL_INTERVAL: "3m"
-    OVO_GIT_API_URL: ""      # default https://api.github.com
-    OVO_GIT_REF: ""          # global default ref (fallback)
-    OVO_AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
-    OVO_AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
-    OVO_AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
+    OCTOREPO_POLL_INTERVAL: "3m"
+    GIT_API_URL: ""      # default https://api.github.com
+    GIT_REF: ""          # global default ref (fallback)
+    AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
+    AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
+    AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
 ```
 ### Manual CRDs
 
@@ -254,12 +254,12 @@ kubectl apply -f config/crd/bases/      # CRDs
 
 | Env var                      | Purpose                                                       | Default                  |
 |------------------------------|---------------------------------------------------------------|--------------------------|
-| `OVO_OCTOREPO_POLL_INTERVAL` | Requeue period for `OctoRepository` reconciler (e.g. `1m`)    | `1m`                     |
-| `OVO_GIT_API_URL`            | GitHub API base (`https://api.github.com` or GHES URL)        | `https://api.github.com` |
-| `OVO_GIT_REF`                | **Global** default git ref if `OctoVault.spec.gitRef` is empty | *(none)*                 |
-| `OVO_AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
-| `OVO_AWS_SM_TTL`             | AWS SM cache TTL (Go duration)                                | `1m`                     |
-| `OVO_AWS_PS_TTL`             | AWS Parameter Store cache TTL (Go duration)                   | `1m`                     |
+| `OCTOREPO_POLL_INTERVAL` | Requeue period for `OctoRepository` reconciler (e.g. `1m`)    | `1m`                     |
+| `GIT_API_URL`            | GitHub API base (`https://api.github.com` or GHES URL)        | `https://api.github.com` |
+| `GIT_REF`                | **Global** default git ref if `OctoVault.spec.gitRef` is empty | *(none)*                 |
+| `AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
+| `AWS_SM_TTL`             | AWS SM cache TTL (Go duration)                                | `1m`                     |
+| `AWS_PS_TTL`             | AWS Parameter Store cache TTL (Go duration)                   | `1m`                     |
 
 ---
 

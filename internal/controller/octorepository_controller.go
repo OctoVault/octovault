@@ -70,7 +70,7 @@ var (
 
 	pollInterval = func() time.Duration {
 
-		if v := strings.TrimSpace(env("OVO_OCTOREPO_POLL_INTERVAL")); v != "" {
+		if v := strings.TrimSpace(env("OCTOREPO_POLL_INTERVAL")); v != "" {
 			if d, err := time.ParseDuration(v); err == nil && d > 0 {
 
 				return d
