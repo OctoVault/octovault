@@ -31,6 +31,7 @@ import (
 	awssm "github.com/octovault/octovault/internal/aws/secret_manager"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -138,6 +139,8 @@ type OctoVaultReconciler struct {
 	Recorder  record.EventRecorder
 	Git       GitFetcher
 	Validator Validator
+
+	Workers int
 
 	AwsSM AwsSecretsProvider
 	AwsPS AwsParamProvider
@@ -1010,6 +1013,9 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// 핫루프 방지
 	b := ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxWorkers(),
+		}).
 		For(&octovaultv1alpha1.OctoVault{}, builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 
 	// OctoRepository -> OctoVault Requeue ( 인덱서: octoRepositoryRef.name )
@@ -1036,4 +1042,13 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV)
 
 	return b.Complete(r)
+}
+
+func (r *OctoVaultReconciler) maxWorkers() int {
+	if r.Workers > 0 {
+
+		return r.Workers
+	}
+
+	return 1
 }

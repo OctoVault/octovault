@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -59,6 +60,7 @@ type OctoRepositoryReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Workers  int
 
 	Checker OrgAccessChecker
 }
@@ -381,6 +383,9 @@ func (r *OctoRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxWorkers(),
+		}).
 		For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
 			predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Secret{}, mapSecretToOrepo,
@@ -390,6 +395,15 @@ func (r *OctoRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}))).
 		Named("octorepository").
 		Complete(r)
+}
+
+func (r *OctoRepositoryReconciler) maxWorkers() int {
+	if r.Workers > 0 {
+
+		return r.Workers
+	}
+
+	return 1
 }
 
 func upsertReadyCondition(conds []metav1.Condition, status metav1.ConditionStatus, reason, msg string) []metav1.Condition {
