@@ -1,0 +1,62 @@
+name: Delivery Container Image to GitHub Container Registry
+
+on:
+  release:
+    types:
+      - published
+
+env:
+  IMAGE_REPO: ghcr.io/octovault/octovault-operator
+
+jobs:
+  build_and_push_image:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: extract_metadata
+        run: |
+          TAG="${{ github.ref_name || github.event.release.tag_name }}"
+          echo "raw=${TAG}" >> $GITHUB_OUTPUT
+          echo "stripped=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "version=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Display extracted version
+        run: |
+          echo "Raw tag: ${{ steps.extract_metadata.outputs.raw }}"
+          echo "Stripped tag: ${{ steps.extract_metadata.outputs.stripped }}"
+          echo "Version: ${{ steps.extract_metadata.outputs.version }}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: GHCR login
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Build & Push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            TARGETOS=linux
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ steps.extract_metadata.outputs.version }}
+            ${{ env.IMAGE_REPO }}:latest
+          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max

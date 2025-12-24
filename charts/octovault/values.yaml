@@ -1,8 +1,8 @@
 image:
-  repository: ghcr.io/octovault/octovault
-#  tag: "0.0.1"
+  repository: ghcr.io/octovault/octovault-operator
+  tag: latest
   pullPolicy: IfNotPresent
-imagePullSecrets: [] # e.g. [{ name: regcred }]
+imagePullSecrets: []
 
 nameOverride: "octovault"
 fullnameOverride: "octovault"
@@ -13,8 +13,8 @@ leaderElection:
 
 serviceAccount:
   create: true
-  name: "octovault-controller-manager" # 빈 값이면 fullname 사용
-  annotations: {} # IRSA 예: { eks.amazonaws.com/role-arn: arn:aws:iam::<acct>:role/<role> }
+  name: "octovault-controller-manager"
+  annotations: {}
 
 rbac:
   create: true
