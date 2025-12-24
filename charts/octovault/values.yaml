@@ -49,6 +49,7 @@ controller:
     # Aws Secret Manager Configuration
     AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
     AWS_SM_TTL: "3m"
+    AWS_PS_TTL: "3m"
 
   extraEnv: []             # [{name: FOO, value: BAR}, ...]
   extraVolumeMounts: []
