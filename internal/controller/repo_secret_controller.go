@@ -9,6 +9,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
@@ -23,6 +24,8 @@ const (
 type RepoSecretReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	Workers int
 }
 
 func (r *RepoSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -66,8 +69,20 @@ func (r *RepoSecretReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxWorkers(),
+		}).
 		For(&corev1.Secret{}, builder.WithPredicates(pred)).
 		Complete(r)
+}
+
+func (r *RepoSecretReconciler) maxWorkers() int {
+	if r.Workers > 0 {
+
+		return r.Workers
+	}
+
+	return 1
 }
 
 func orgFromSecret(secret *corev1.Secret, org string) string {

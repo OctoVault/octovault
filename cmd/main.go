@@ -22,6 +22,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,6 +74,7 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var maxWorkers int
 	var tlsOpts []func(*tls.Config)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -92,6 +94,8 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.IntVar(&maxWorkers, "max-workers", 1,
+		"Number of workers for each controller.")
 
 	opts := zap.Options{
 		Development: true,
@@ -117,6 +121,8 @@ func main() {
 
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
+
+	ovMaxWorkers := resolveWorkers(maxWorkers, "OVO_OV_MAX_CONCURRENT", 1)
 
 	// Create watchers for metrics and webhooks certificates
 	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
@@ -265,8 +271,9 @@ func main() {
 
 	// Secret -> OctoRepository controller
 	if err := (&controller.RepoSecretReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Workers: ovMaxWorkers,
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoRepositorySecret")
@@ -277,6 +284,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("octorepository-controller"),
+		Workers:  ovMaxWorkers,
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoRepository")
@@ -338,6 +346,7 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("octovault"),
 		Git:      gitFetcher,
+		Workers:  ovMaxWorkers,
 		AwsSM:    awsSMProv,
 		AwsPS:    awsPSProv,
 		// Validator: yourValidator,
@@ -385,4 +394,26 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// resolveWorkers: env(>0) flag(>0) > def
+func resolveWorkers(flagVal int, envKey string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(envKey)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+
+			return n
+		}
+	}
+
+	if flagVal > 0 {
+
+		return flagVal
+	}
+
+	if def <= 0 {
+
+		return 1
+	}
+
+	return def
 }
