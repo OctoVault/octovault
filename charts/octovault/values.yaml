@@ -1,5 +1,5 @@
 image:
-  repository: octovault/octovault
+  repository: ghcr.io/octovault/octovault
 #  tag: "0.0.1"
   pullPolicy: IfNotPresent
 imagePullSecrets: [] # e.g. [{ name: regcred }]
