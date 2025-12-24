@@ -43,7 +43,7 @@ controller:
   extraArgs: []            # 추가 플래그
   env:
     # OctoRepository 폴링 주기(컨트롤러가 읽는 ENV)
-    OCTOREPO_POLL_INTERVAL: "3m"
+    GIT_CRED_TTL: "3m"
     GIT_API_URL: "https://api.github.com"
     GIT_REF: "main" # empty if you want to use default branch
     # Aws Secret Manager Configuration

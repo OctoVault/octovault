@@ -234,7 +234,7 @@ controller:
     port: 8443
   enableHTTP2: false
   env:
-    OCTOREPO_POLL_INTERVAL: "3m"
+    GIT_CRED_TTL: "3m"
     GIT_API_URL: ""      # default https://api.github.com
     GIT_REF: ""          # global default ref (fallback)
     AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
@@ -254,7 +254,7 @@ kubectl apply -f config/crd/bases/      # CRDs
 
 | Env var                      | Purpose                                                       | Default                  |
 |------------------------------|---------------------------------------------------------------|--------------------------|
-| `OCTOREPO_POLL_INTERVAL` | Requeue period for `OctoRepository` reconciler (e.g. `1m`)    | `1m`                     |
+| `GIT_CRED_TTL` | Requeue period for `OctoRepository` reconciler (e.g. `1m`)    | `1m`                     |
 | `GIT_API_URL`            | GitHub API base (`https://api.github.com` or GHES URL)        | `https://api.github.com` |
 | `GIT_REF`                | **Global** default git ref if `OctoVault.spec.gitRef` is empty | *(none)*                 |
 | `AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
