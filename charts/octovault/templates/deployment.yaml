@@ -39,8 +39,8 @@ spec:
             - "{{ . }}"
             {{- end }}
           env:
-            - name: OVO_OCTOREPO_POLL_INTERVAL
-              value: "{{ .Values.controller.env.OVO_OCTOREPO_POLL_INTERVAL }}"
+            - name: GIT_CRED_TTL
+              value: "{{ .Values.controller.env.GIT_CRED_TTL }}"
             {{- if .Values.controller.env.AWS_REGION }}
             - name: AWS_REGION
               value: "{{ .Values.controller.env.AWS_REGION }}"

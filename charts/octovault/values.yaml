@@ -43,12 +43,13 @@ controller:
   extraArgs: []            # 추가 플래그
   env:
     # OctoRepository 폴링 주기(컨트롤러가 읽는 ENV)
-    OVO_OCTOREPO_POLL_INTERVAL: "3m"
-    OVO_GIT_API_URL: "https://api.github.com"
-    OVO_GIT_REF: "main" # empty if you want to use default branch
+    GIT_CRED_TTL: "3m"
+    GIT_API_URL: "https://api.github.com"
+    GIT_REF: "main" # empty if you want to use default branch
     # Aws Secret Manager Configuration
-    OVO_AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
-    OVO_AWS_SM_TTL: "3m"
+    AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
+    AWS_SM_TTL: "3m"
+    AWS_PS_TTL: "3m"
 
   extraEnv: []             # [{name: FOO, value: BAR}, ...]
   extraVolumeMounts: []

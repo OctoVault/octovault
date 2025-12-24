@@ -122,7 +122,7 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	ovMaxWorkers := resolveWorkers(maxWorkers, "OVO_OV_MAX_CONCURRENT", 1)
+	ovMaxWorkers := resolveWorkers(maxWorkers, "MAX_WORKERS", 1)
 
 	// Create watchers for metrics and webhooks certificates
 	var metricsCertWatcher, webhookCertWatcher *certwatcher.CertWatcher
@@ -293,8 +293,8 @@ func main() {
 
 	gitUA := "octovault-operator"
 
-	gitBase := os.Getenv("OVO_GIT_API_URL") // 비우면 자동으로 https://api.github.com
-	gitRef := os.Getenv("OVO_GIT_REF")      // 비우면 디폴트 브랜치
+	gitBase := os.Getenv("GIT_API_URL") // 비우면 자동으로 https://api.github.com
+	gitRef := os.Getenv("GIT_REF")      // 비우면 디폴트 브랜치
 
 	gitFetcher := github.NewFetcher(github.Options{
 		BaseURL:        gitBase,
@@ -304,13 +304,13 @@ func main() {
 		UserAgent:      gitUA,
 	})
 
-	region := os.Getenv("OVO_AWS_REGION")
-	AwsSMTtlStr := os.Getenv("OVO_AWS_SM_TTL")
+	region := os.Getenv("AWS_REGION")
+	AwsSMTtlStr := os.Getenv("AWS_SM_TTL")
 	if AwsSMTtlStr == "" {
 
 		AwsSMTtlStr = "1m"
 	}
-	AwsPSTtlStr := os.Getenv("OVO_AWS_PS_TTL")
+	AwsPSTtlStr := os.Getenv("AWS_PS_TTL")
 	if AwsPSTtlStr == "" {
 
 		AwsPSTtlStr = "1m"
