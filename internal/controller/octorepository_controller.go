@@ -287,27 +287,25 @@ func (r *OctoRepositoryReconciler) checkOwnerAccess(ctx context.Context, ownerUR
 	}
 
 	// 1) try Organization
+	var err error
 	if err := probeList(ctx,
 		fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=1", owner),
 		"organization", owner, token); err == nil {
 
 		return nil
-	} else {
-
-		orgErr := err
-
-		// 2) fallback: try User
-		if err2 := probeList(ctx,
-			fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
-			"user", owner, token); err2 == nil {
-
-			return nil
-		} else {
-
-			// 둘 다 실패
-			return fmt.Errorf("org probe failed: %v; user probe failed: %v", orgErr, err2)
-		}
 	}
+
+	// 2) fallback: try User
+	var err2 error
+	if err2 := probeList(ctx,
+		fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
+		"user", owner, token); err2 == nil {
+
+		return nil
+	}
+
+	// 둘 다 실패
+	return fmt.Errorf("org probe failed: %v; user probe failed: %v", err, err2)
 }
 
 func probeList(ctx context.Context, url, kind, owner, token string) error {
