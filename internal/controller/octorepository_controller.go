@@ -288,7 +288,7 @@ func (r *OctoRepositoryReconciler) checkOwnerAccess(ctx context.Context, ownerUR
 
 	// 1) try Organization
 	var err error
-	if err := probeList(ctx,
+	if err = probeList(ctx,
 		fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=1", owner),
 		"organization", owner, token); err == nil {
 
@@ -297,7 +297,7 @@ func (r *OctoRepositoryReconciler) checkOwnerAccess(ctx context.Context, ownerUR
 
 	// 2) fallback: try User
 	var err2 error
-	if err2 := probeList(ctx,
+	if err2 = probeList(ctx,
 		fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
 		"user", owner, token); err2 == nil {
 
@@ -381,16 +381,16 @@ func (r *OctoRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(controller.Options{
-			MaxConcurrentReconciles: r.maxWorkers(),
-		}).
-		For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
-			predicate.GenerationChangedPredicate{})).
-		Watches(&corev1.Secret{}, mapSecretToOrepo,
-			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			WithOptions(controller.Options{
+				MaxConcurrentReconciles: r.maxWorkers(),
+			}).
+			For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
+				predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Secret{}, mapSecretToOrepo,
+				builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 
-				return obj.GetLabels()[LabelRepo] == LabelRepoTrue
-			}))).
+					return obj.GetLabels()[LabelRepo] == LabelRepoTrue
+				}))).
 		Named("octorepository").
 		Complete(r)
 }
