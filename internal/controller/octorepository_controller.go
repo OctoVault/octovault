@@ -287,27 +287,25 @@ func (r *OctoRepositoryReconciler) checkOwnerAccess(ctx context.Context, ownerUR
 	}
 
 	// 1) try Organization
-	if err := probeList(ctx,
+	var err error
+	if err = probeList(ctx,
 		fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=1", owner),
 		"organization", owner, token); err == nil {
 
 		return nil
-	} else {
-
-		orgErr := err
-
-		// 2) fallback: try User
-		if err2 := probeList(ctx,
-			fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
-			"user", owner, token); err2 == nil {
-
-			return nil
-		} else {
-
-			// 둘 다 실패
-			return fmt.Errorf("org probe failed: %v; user probe failed: %v", orgErr, err2)
-		}
 	}
+
+	// 2) fallback: try User
+	var err2 error
+	if err2 = probeList(ctx,
+		fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
+		"user", owner, token); err2 == nil {
+
+		return nil
+	}
+
+	// 둘 다 실패
+	return fmt.Errorf("org probe failed: %v; user probe failed: %v", err, err2)
 }
 
 func probeList(ctx context.Context, url, kind, owner, token string) error {
@@ -383,16 +381,16 @@ func (r *OctoRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(controller.Options{
-			MaxConcurrentReconciles: r.maxWorkers(),
-		}).
-		For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
-			predicate.GenerationChangedPredicate{})).
-		Watches(&corev1.Secret{}, mapSecretToOrepo,
-			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+			WithOptions(controller.Options{
+				MaxConcurrentReconciles: r.maxWorkers(),
+			}).
+			For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
+				predicate.GenerationChangedPredicate{})).
+			Watches(&corev1.Secret{}, mapSecretToOrepo,
+				builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 
-				return obj.GetLabels()[LabelRepo] == LabelRepoTrue
-			}))).
+					return obj.GetLabels()[LabelRepo] == LabelRepoTrue
+				}))).
 		Named("octorepository").
 		Complete(r)
 }

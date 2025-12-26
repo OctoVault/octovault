@@ -484,17 +484,18 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 				if jk := strings.TrimSpace(it.JSONKey); jk != "" {
+
 					// 값이 JSON일 때 특정 키만
-					if out, err := r.AwsPS.ExtractJSONKey(pv, jk); err != nil {
+					out, err := r.AwsPS.ExtractJSONKey(pv, jk)
+					if err != nil {
 
 						r.updateStatusIfChanged(ctx, ov, fail("ExternalJSONExtractFailed",
 							fmt.Sprintf("aws parameter %q jsonKey=%q: %v", paramName, jk, err)))
 
 						return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("aws parameter %q jsonKey=%q", paramName, jk)
-					} else {
-
-						pv = out
 					}
+
+					pv = out
 				}
 
 				bytes[k] = pv
@@ -519,6 +520,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 		// AWS SM 등 외부 참조에 대한 요약 상태 업데이트
 		if len(extRefs) > 0 {
+
 			ov.Status.ExternalRefs = extRefs
 			ov.Status.ExternalRefsSummary = summarizeExtRefs(extRefs)
 		} else {
