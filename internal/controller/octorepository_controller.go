@@ -381,16 +381,16 @@ func (r *OctoRepositoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
-			WithOptions(controller.Options{
-				MaxConcurrentReconciles: r.maxWorkers(),
-			}).
-			For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
-				predicate.GenerationChangedPredicate{})).
-			Watches(&corev1.Secret{}, mapSecretToOrepo,
-				builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: r.maxWorkers(),
+		}).
+		For(&octovaultv1alpha1.OctoRepository{}, builder.WithPredicates(
+			predicate.GenerationChangedPredicate{})).
+		Watches(&corev1.Secret{}, mapSecretToOrepo,
+			builder.WithPredicates(predicate.NewPredicateFuncs(func(obj client.Object) bool {
 
-					return obj.GetLabels()[LabelRepo] == LabelRepoTrue
-				}))).
+				return obj.GetLabels()[LabelRepo] == LabelRepoTrue
+			}))).
 		Named("octorepository").
 		Complete(r)
 }
