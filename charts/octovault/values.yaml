@@ -42,6 +42,8 @@ controller:
   enableHTTP2: false
   extraArgs: []            # 추가 플래그
   env:
+    # 컨트롤러 동시성 (컨트롤러가 동시에 처리할 작업 수)
+    MAX_WORKERS: 1
     # OctoRepository 폴링 주기(컨트롤러가 읽는 ENV)
     GIT_CRED_TTL: "3m"
     GIT_API_URL: "https://api.github.com"

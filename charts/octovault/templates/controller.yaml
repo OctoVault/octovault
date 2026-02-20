@@ -39,12 +39,20 @@ spec:
             - "{{ . }}"
             {{- end }}
           env:
+            - name: MAX_WORKERS
+              value: "{{ .Values.controller.env.MAX_WORKERS }}"
             - name: GIT_CRED_TTL
               value: "{{ .Values.controller.env.GIT_CRED_TTL }}"
-            {{- if .Values.controller.env.AWS_REGION }}
+            - name: GIT_API_URL
+              value: "{{ .Values.controller.env.GIT_API_URL }}"
+            - name: GIT_REF
+              value: "{{ .Values.controller.env.GIT_REF }}"
             - name: AWS_REGION
               value: "{{ .Values.controller.env.AWS_REGION }}"
-            {{- end }}
+            - name: AWS_SM_TTL
+              value: "{{ .Values.controller.env.AWS_SM_TTL }}"
+            - name: AWS_PS_TTL
+              value: "{{ .Values.controller.env.AWS_PS_TTL }}"
             {{- range .Values.controller.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}
