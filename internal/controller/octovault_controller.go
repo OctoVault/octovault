@@ -239,6 +239,12 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		targetNS = ov.Namespace
 	}
 
+	if targetNS != ov.Namespace {
+		r.updateStatusIfChanged(ctx, &ov, fail("InvalidTargetNamespace",
+			fmt.Sprintf("targetNamespace %q must match OctoVault namespace %q: cross-namespace targets are not supported", targetNS, ov.Namespace)))
+		return ctrl.Result{RequeueAfter: poll}, nil
+	}
+
 	// 4) apply
 	appliedHash, res, err := r.applyOutput(ctx, &ov, doc, poll, resolvedType, rev, targetNS)
 	if err != nil || res.RequeueAfter > 0 {
