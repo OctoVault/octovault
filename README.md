@@ -104,10 +104,6 @@ kind: Secret
 metadata:
   name: my-org-credentials
   namespace: octovault-system
-  annotations:
-    foo: bar
-  labels:
-    john: doe
 type: Opaque
 stringData:
   username: "octovault"            # optional (defaults to "octovault")
@@ -168,6 +164,7 @@ spec:
 ```
 - If `metadata.type` is `ConfigMap`, values become `.data[string]`.
 - Only `Text` (default) type is supported.
+- **OctoVault owns the labels and annotations of the resource it creates.** Keys not declared in `values.yaml` (system keys or `metadata.labels`/`metadata.annotations`) are removed on every reconcile.
 
 #### Secret
 ```yaml
