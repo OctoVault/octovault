@@ -37,3 +37,4 @@ charts/octovault/check.yaml
 /envtest/
 
 __analysis/
+__review/
