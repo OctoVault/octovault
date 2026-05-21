@@ -104,6 +104,10 @@ kind: Secret
 metadata:
   name: my-org-credentials
   namespace: octovault-system
+  annotations:
+    foo: bar
+  labels:
+    john: doe
 type: Opaque
 stringData:
   username: "octovault"            # optional (defaults to "octovault")
@@ -153,6 +157,10 @@ status:
 ```yaml
 metadata:
   type: ConfigMap
+  annotations:
+    foo: bar
+  labels:
+    john: doe
 spec:
   data:
     - key: FOO
@@ -165,6 +173,10 @@ spec:
 ```yaml
 metadata:
   type: Secret
+  annotations:
+    foo: bar
+  labels:
+    john: doe
 spec:
   data:
     - key: FOO
