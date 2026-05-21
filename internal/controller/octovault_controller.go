@@ -100,7 +100,9 @@ func setManagedLabels(m *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) {
 // Secret: spec.data[].{key,type,value,name}
 type valuesDoc struct {
 	Metadata struct {
-		Type string `yaml:"type"`
+		Type        string            `yaml:"type"`
+		Annotations map[string]string `yaml:"annotations,omitempty"`
+		Labels      map[string]string `yaml:"labels,omitempty"`
 	} `yaml:"metadata"`
 	Spec struct {
 		Data []struct {
