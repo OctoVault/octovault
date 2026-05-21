@@ -1,32 +1,11 @@
 package controller
 
-import "strings"
-
-var reservedPrefixes = []string{
-	"octovault.it/",
-	"reconcile.octovault.it/",
-	"app.kubernetes.io/",
-}
-
-func isReservedKey(k string) bool {
-
-	for _, p := range reservedPrefixes {
-		if strings.HasPrefix(k, p) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func mergeMap(system, user map[string]string) map[string]string {
 
 	result := make(map[string]string)
 
 	for k, v := range user {
-		if !isReservedKey(k) {
-			result[k] = v
-		}
+		result[k] = v
 	}
 
 	for k, v := range system {

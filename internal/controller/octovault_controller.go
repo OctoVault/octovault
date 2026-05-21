@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -584,8 +585,17 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return err
 	}
 
-	cm.Labels = mergeLabels(sysLabels, userLabels)
-	cm.Annotations = mergeAnnotations(sysAnnotations, userAnnotations)
+	desiredLabels := mergeLabels(sysLabels, userLabels)
+	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
+
+	if reflect.DeepEqual(cm.Labels, desiredLabels) &&
+		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
+		reflect.DeepEqual(cm.Data, data) {
+		return nil
+	}
+
+	cm.Labels = desiredLabels
+	cm.Annotations = desiredAnnotations
 	cm.Data = data
 
 	return r.Update(ctx, &cm)
@@ -631,8 +641,17 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return err
 	}
 
-	sec.Labels = mergeLabels(sysLabels, userLabels)
-	sec.Annotations = mergeAnnotations(sysAnnotations, userAnnotations)
+	desiredLabels := mergeLabels(sysLabels, userLabels)
+	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
+
+	if reflect.DeepEqual(sec.Labels, desiredLabels) &&
+		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
+		reflect.DeepEqual(sec.Data, data) {
+		return nil
+	}
+
+	sec.Labels = desiredLabels
+	sec.Annotations = desiredAnnotations
 	sec.Data = data
 
 	return r.Update(ctx, &sec)
@@ -889,7 +908,6 @@ func sha256OfBytesMap(m map[string][]byte) string {
 
 	return hex.EncodeToString(h.Sum(nil))
 }
-
 
 func getFromSecret(s *corev1.Secret, key string) string {
 	if v, ok := s.Data[key]; ok && len(v) > 0 {
