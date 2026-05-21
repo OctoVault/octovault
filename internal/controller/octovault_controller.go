@@ -23,6 +23,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -73,25 +74,24 @@ func labelSafe(v string) string {
 	return v[:31] + "-" + hex.EncodeToString(sum[:4])
 }
 
-func setManagedLabels(m *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) {
-	if m.Labels == nil {
+func buildSysLabels(ov *octovaultv1alpha1.OctoVault, rev string) map[string]string {
 
-		m.Labels = map[string]string{}
+	return map[string]string{
+		"reconcile.octovault.it/managed-by": "octovault",
+		"reconcile.octovault.it/owner":      labelSafe(ov.Name),
+		"reconcile.octovault.it/revision":   rev,
+		LabelManagedBy:                      "octovault",
+		LabelOVOwnerNS:                      ov.Namespace,
+		LabelOVOwnerName:                    labelSafe(ov.Name),
 	}
-	m.Labels[LabelManagedBy] = "octovault"
+}
 
-	ns := ov.Namespace
-	name := ov.Name
-	name = labelSafe(name)
+func buildSysAnnotations(ov *octovaultv1alpha1.OctoVault, dataHash string) map[string]string {
 
-	m.Labels[LabelOVOwnerNS] = ns
-	m.Labels[LabelOVOwnerName] = name
-
-	if m.Annotations == nil {
-
-		m.Annotations = map[string]string{}
+	return map[string]string{
+		"reconcile.octovault.it/data-hash": dataHash,
+		AnnoOVOwnerFull:                    ov.Namespace + "/" + labelSafe(ov.Name),
 	}
-	m.Annotations[AnnoOVOwnerFull] = ns + "/" + name
 }
 
 // values.yaml 모델
@@ -100,7 +100,9 @@ func setManagedLabels(m *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) {
 // Secret: spec.data[].{key,type,value,name}
 type valuesDoc struct {
 	Metadata struct {
-		Type string `yaml:"type"`
+		Type        string            `yaml:"type"`
+		Annotations map[string]string `yaml:"annotations,omitempty"`
+		Labels      map[string]string `yaml:"labels,omitempty"`
 	} `yaml:"metadata"`
 	Spec struct {
 		Data []struct {
@@ -235,6 +237,12 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	targetNS := ov.Spec.TargetNamespace
 	if targetNS == "" {
 		targetNS = ov.Namespace
+	}
+
+	if targetNS != ov.Namespace {
+		r.updateStatusIfChanged(ctx, &ov, fail("InvalidTargetNamespace",
+			fmt.Sprintf("targetNamespace %q must match OctoVault namespace %q: cross-namespace targets are not supported", targetNS, ov.Namespace)))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	// 4) apply
@@ -388,7 +396,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		}
 		appliedHash = sha256OfStringMap(data)
 
-		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, data); err != nil {
+		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return "", ctrl.Result{RequeueAfter: poll}, err
@@ -510,7 +518,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		}
 
 		appliedHash = sha256OfBytesMap(bytes)
-		if err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, bytes); err != nil {
+		if err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, bytes, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
@@ -564,7 +572,10 @@ func (r *OctoVaultReconciler) fetch(ctx context.Context, org, repo, path, ref, t
 	return r.Git.Fetch(ctx, org, repo, path, ref, token)
 }
 
-func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev string, data map[string]string) error {
+func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string]string, userLabels, userAnnotations map[string]string) error {
+
+	sysLabels := buildSysLabels(ov, rev)
+	sysAnnotations := buildSysAnnotations(ov, dataHash)
 
 	var cm corev1.ConfigMap
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &cm)
@@ -573,16 +584,10 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 
 		cm = corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{
-					"reconcile.octovault.it/managed-by": "octovault",
-					"reconcile.octovault.it/owner":      ov.Name,
-					"reconcile.octovault.it/revision":   rev,
-				},
-				Annotations: map[string]string{
-					"reconcile.octovault.it/data-hash": sha256OfStringMap(data),
-				},
-				Name:      name,
-				Namespace: ns,
+				Labels:      mergeLabels(sysLabels, userLabels),
+				Annotations: mergeAnnotations(sysAnnotations, userAnnotations),
+				Name:        name,
+				Namespace:   ns,
 				OwnerReferences: []metav1.OwnerReference{
 					*metav1.NewControllerRef(ov, ov.GroupVersionKind()),
 				},
@@ -590,39 +595,35 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 			Data: data,
 		}
 
-		setManagedLabels(&cm.ObjectMeta, ov)
-
 		return r.Create(ctx, &cm)
 	} else if err != nil {
 
 		return err
 	}
 
-	setManagedLabels(&cm.ObjectMeta, ov)
+	desiredLabels := mergeLabels(sysLabels, userLabels)
+	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if !equalStringMap(cm.Data, data) {
-		if cm.Data == nil {
-
-			cm.Data = map[string]string{}
-		}
-
-		for k := range cm.Data {
-
-			delete(cm.Data, k)
-		}
-
-		for k, v := range data {
-
-			cm.Data[k] = v
-		}
-
-		return r.Update(ctx, &cm)
+	if reflect.DeepEqual(cm.Labels, desiredLabels) &&
+		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
+		reflect.DeepEqual(cm.Data, data) {
+		return nil
 	}
+
+	// OctoVault owns the resource it creates; labels/annotations are fully replaced
+	// by the desired state (system + user-specified keys). Third-party keys not
+	// declared in values.yaml are intentionally pruned on each reconcile.
+	cm.Labels = desiredLabels
+	cm.Annotations = desiredAnnotations
+	cm.Data = data
 
 	return r.Update(ctx, &cm)
 }
 
-func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev string, data map[string][]byte) error {
+func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string][]byte, userLabels, userAnnotations map[string]string) error {
+
+	sysLabels := buildSysLabels(ov, rev)
+	sysAnnotations := buildSysAnnotations(ov, dataHash)
 
 	var sec corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, &sec)
@@ -631,16 +632,10 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 
 		sec = corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{
-					"reconcile.octovault.it/managed-by": "octovault",
-					"reconcile.octovault.it/owner":      ov.Name,
-					"reconcile.octovault.it/revision":   rev,
-				},
-				Annotations: map[string]string{
-					"reconcile.octovault.it/data-hash": sha256OfBytesMap(data),
-				},
-				Name:      name,
-				Namespace: ns,
+				Labels:      mergeLabels(sysLabels, userLabels),
+				Annotations: mergeAnnotations(sysAnnotations, userAnnotations),
+				Name:        name,
+				Namespace:   ns,
 				OwnerReferences: []metav1.OwnerReference{
 					*metav1.NewControllerRef(ov, ov.GroupVersionKind()),
 				},
@@ -649,34 +644,27 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 			Type: corev1.SecretTypeOpaque,
 		}
 
-		setManagedLabels(&sec.ObjectMeta, ov)
-
 		return r.Create(ctx, &sec)
 	} else if err != nil {
 
 		return err
 	}
 
-	setManagedLabels(&sec.ObjectMeta, ov)
+	desiredLabels := mergeLabels(sysLabels, userLabels)
+	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if !equalBytesMap(sec.Data, data) {
-		if sec.Data == nil {
-
-			sec.Data = map[string][]byte{}
-		}
-
-		for k := range sec.Data {
-
-			delete(sec.Data, k)
-		}
-
-		for k, v := range data {
-
-			sec.Data[k] = v
-		}
-
-		return r.Update(ctx, &sec)
+	if reflect.DeepEqual(sec.Labels, desiredLabels) &&
+		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
+		reflect.DeepEqual(sec.Data, data) {
+		return nil
 	}
+
+	// OctoVault owns the resource it creates; labels/annotations are fully replaced
+	// by the desired state (system + user-specified keys). Third-party keys not
+	// declared in values.yaml are intentionally pruned on each reconcile.
+	sec.Labels = desiredLabels
+	sec.Annotations = desiredAnnotations
+	sec.Data = data
 
 	return r.Update(ctx, &sec)
 }
@@ -931,40 +919,6 @@ func sha256OfBytesMap(m map[string][]byte) string {
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func equalStringMap(a, b map[string]string) bool {
-	if len(a) != len(b) {
-
-		return false
-	}
-
-	for k, va := range a {
-		if vb, ok := b[k]; !ok || va != vb {
-
-			return false
-		}
-	}
-
-	return true
-}
-
-func equalBytesMap(a, b map[string][]byte) bool {
-	if len(a) != len(b) {
-
-		return false
-	}
-
-	for k, va := range a {
-		vb, ok := b[k]
-
-		if !ok || string(va) != string(vb) {
-
-			return false
-		}
-	}
-
-	return true
 }
 
 func getFromSecret(s *corev1.Secret, key string) string {
