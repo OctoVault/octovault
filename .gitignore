@@ -35,3 +35,5 @@ charts/octovault/check.yaml
 /testbin/
 /kubebuilder/
 /envtest/
+
+__analysis/
