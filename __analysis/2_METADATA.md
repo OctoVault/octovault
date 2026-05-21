@@ -5,7 +5,7 @@
 - `octovault-values.yaml`의 `metadata` 섹션에 `annotations`와 `labels` 필드를 추가할 수 있다.
 - OctoVault Controller가 생성하는 **Secret** 및 **ConfigMap** 오브젝트에 해당 annotations와 labels가 병합되어 적용된다.
 - 사용자 정의 labels/annotations는 OctoVault 시스템 labels/annotations를 덮어쓰지 않는다.
-  - 시스템 예약 키(`app.kubernetes.io/managed-by`, `octovault.it/*`, `reconcile.octovault.it/*`)는 사용자 값으로 덮어쓰기가 금지된다.
+  - 시스템 키가 항상 우선한다. 동일 키가 충돌하면 시스템 값이 유지된다.
 - values.yaml이 변경되면 다음 Reconcile 시 기존 리소스의 labels/annotations도 갱신된다.
 - `annotations`와 `labels`는 각각 선택 사항이다 (없으면 빈 map으로 처리).
 
@@ -56,22 +56,6 @@ type valuesDoc struct {
 
 - CRD Spec 변경 없음. 사용자 정의 metadata는 values.yaml에서만 관리한다.
 
-### Value Objects
-
-#### `UserMetadata`
-
-사용자가 지정한 labels/annotations를 표현하는 value object.
-
-```go
-type UserMetadata struct {
-    Annotations map[string]string
-    Labels      map[string]string
-}
-```
-
-- 예약 키 필터링 로직을 캡슐화한다.
-- `FilterReservedKeys(reserved []string) UserMetadata` 메서드로 시스템 키 제거.
-
 ---
 
 ## Input / Output
@@ -110,8 +94,7 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 
 1. `valuesDoc.Metadata`에 `Annotations`, `Labels` 필드 추가
 2. `mergeLabels(system, user map[string]string) map[string]string` 헬퍼 함수 추가
-   - user map을 기본값으로, system map의 키가 항상 우선
-   - 예약 prefix(`octovault.it/`, `reconcile.octovault.it/`, `app.kubernetes.io/`) 키는 user에서 제거
+   - user map을 기본값으로, system map의 키가 항상 우선 (동일 키 충돌 시 system 값으로 덮어씀)
 3. `applyConfigMap()`, `applySecret()` 내 ObjectMeta 설정 시 `mergeLabels` / `mergeAnnotations` 호출
 
 **장점**:
@@ -142,8 +125,7 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 
 | 케이스 | 처리 방법 |
 |--------|-----------|
-| 사용자가 `octovault.it/*` prefix 키 지정 | 해당 키 무시 (시스템 키 우선 병합으로 덮어쓰기) |
-| 사용자가 `app.kubernetes.io/managed-by` 지정 | 무시 (시스템 키 우선) |
+| 사용자가 시스템 키와 동일한 키 지정 | 시스템 값으로 덮어써짐 (system 우선 병합) |
 | `annotations` 또는 `labels` 필드 누락 | 빈 map으로 처리, 정상 동작 |
 | values.yaml에서 labels/annotations 제거 후 Reconcile | 이전에 추가된 사용자 labels/annotations가 제거되어야 함 |
 | label 값이 K8s label 규격 위반 (`>63자`, 특수문자) | values.yaml 파싱 후 K8s API 적용 시 오류 발생, Reconcile Failed 상태로 전환 |
@@ -155,7 +137,6 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 
 - labels/annotations 병합 로직은 순수 함수로 구현하여 단위 테스트 가능해야 한다.
 - 기존 Reconcile 성능에 영향 없어야 한다 (O(n) 병합, n은 key 수).
-- 예약 키 목록은 상수로 정의하여 유지보수 가능하게 한다.
 
 ---
 
@@ -163,16 +144,7 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 
 - K8s label 값은 최대 63자, DNS subdomain 규칙 준수 필요.
 - Annotation 키는 최대 253자 prefix + `/` + 63자 name.
-- 시스템 예약 키는 반드시 보호되어야 함:
-  - `app.kubernetes.io/managed-by`
-  - `octovault.it/owner-ns`
-  - `octovault.it/owner-name`
-  - `octovault.it/owner`
-  - `octovault.it/retained-from`
-  - `reconcile.octovault.it/managed-by`
-  - `reconcile.octovault.it/owner`
-  - `reconcile.octovault.it/revision`
-  - `reconcile.octovault.it/data-hash`
+- 시스템 키와 사용자 키가 충돌하면 시스템 키가 항상 우선한다 (merge order 보장).
 
 ---
 
@@ -196,7 +168,7 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 - [x] system map에 있는 키가 user map의 동일 키를 덮어씀 (system 우선)
 - [x] user map이 nil이어도 system map만 반환되어 panic 없음
 - [x] system map이 nil이어도 user map만 반환됨
-- [x] 예약 prefix(`octovault.it/`, `reconcile.octovault.it/`, `app.kubernetes.io/`) 키는 user map에서 제거됨
+- [x] system map에 있는 키가 user map의 동일 키를 덮어써서 system 값이 유지됨
 
 ### 3. ConfigMap 생성 - 사용자 labels/annotations 반영
 

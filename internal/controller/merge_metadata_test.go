@@ -56,44 +56,6 @@ func TestMergeLabels(t *testing.T) {
 		})
 	})
 
-	t.Run("octovault.it/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
-		system := map[string]string{"octovault.it/owner-ns": "default"}
-		user := map[string]string{
-			"octovault.it/owner-ns": "injected",
-			"safe-key":              "safe-val",
-		}
-
-		got := mergeLabels(system, user)
-
-		assert.Equal(t, "default", got["octovault.it/owner-ns"])
-		assert.Equal(t, "safe-val", got["safe-key"])
-	})
-
-	t.Run("reconcile.octovault.it/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
-		system := map[string]string{"reconcile.octovault.it/revision": "abc123"}
-		user := map[string]string{
-			"reconcile.octovault.it/revision": "tampered",
-			"my-label":                        "my-value",
-		}
-
-		got := mergeLabels(system, user)
-
-		assert.Equal(t, "abc123", got["reconcile.octovault.it/revision"])
-		assert.Equal(t, "my-value", got["my-label"])
-	})
-
-	t.Run("app.kubernetes.io/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
-		system := map[string]string{"app.kubernetes.io/managed-by": "octovault"}
-		user := map[string]string{
-			"app.kubernetes.io/managed-by": "evil",
-			"custom-label":                 "ok",
-		}
-
-		got := mergeLabels(system, user)
-
-		assert.Equal(t, "octovault", got["app.kubernetes.io/managed-by"])
-		assert.Equal(t, "ok", got["custom-label"])
-	})
 }
 
 func TestMergeAnnotations(t *testing.T) {
@@ -134,32 +96,6 @@ func TestMergeAnnotations(t *testing.T) {
 			got := mergeAnnotations(nil, user)
 			assert.Equal(t, "bar", got["foo"])
 		})
-	})
-
-	t.Run("octovault.it/ prefix annotation이 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
-		system := map[string]string{"octovault.it/owner": "default/my-ov"}
-		user := map[string]string{
-			"octovault.it/owner": "evil-override",
-			"safe-anno":          "safe-value",
-		}
-
-		got := mergeAnnotations(system, user)
-
-		assert.Equal(t, "default/my-ov", got["octovault.it/owner"])
-		assert.Equal(t, "safe-value", got["safe-anno"])
-	})
-
-	t.Run("reconcile.octovault.it/ prefix annotation이 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
-		system := map[string]string{"reconcile.octovault.it/data-hash": "realHash"}
-		user := map[string]string{
-			"reconcile.octovault.it/data-hash": "fakeHash",
-			"custom-anno":                      "val",
-		}
-
-		got := mergeAnnotations(system, user)
-
-		assert.Equal(t, "realHash", got["reconcile.octovault.it/data-hash"])
-		assert.Equal(t, "val", got["custom-anno"])
 	})
 
 	t.Run("annotation 값이 빈 문자열인 user 항목도 merged map에 포함됨", func(t *testing.T) {
