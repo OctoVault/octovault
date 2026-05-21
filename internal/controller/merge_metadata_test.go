@@ -56,7 +56,7 @@ func TestMergeLabels(t *testing.T) {
 		})
 	})
 
-	t.Run("octovault.it/ prefix 키는 user map에서 제거됨", func(t *testing.T) {
+	t.Run("octovault.it/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
 		system := map[string]string{"octovault.it/owner-ns": "default"}
 		user := map[string]string{
 			"octovault.it/owner-ns": "injected",
@@ -69,7 +69,7 @@ func TestMergeLabels(t *testing.T) {
 		assert.Equal(t, "safe-val", got["safe-key"])
 	})
 
-	t.Run("reconcile.octovault.it/ prefix 키는 user map에서 제거됨", func(t *testing.T) {
+	t.Run("reconcile.octovault.it/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
 		system := map[string]string{"reconcile.octovault.it/revision": "abc123"}
 		user := map[string]string{
 			"reconcile.octovault.it/revision": "tampered",
@@ -82,7 +82,7 @@ func TestMergeLabels(t *testing.T) {
 		assert.Equal(t, "my-value", got["my-label"])
 	})
 
-	t.Run("app.kubernetes.io/ prefix 키는 user map에서 제거됨", func(t *testing.T) {
+	t.Run("app.kubernetes.io/ prefix 키가 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
 		system := map[string]string{"app.kubernetes.io/managed-by": "octovault"}
 		user := map[string]string{
 			"app.kubernetes.io/managed-by": "evil",
@@ -136,7 +136,7 @@ func TestMergeAnnotations(t *testing.T) {
 		})
 	})
 
-	t.Run("octovault.it/ prefix annotation 키는 user map에서 무시됨", func(t *testing.T) {
+	t.Run("octovault.it/ prefix annotation이 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
 		system := map[string]string{"octovault.it/owner": "default/my-ov"}
 		user := map[string]string{
 			"octovault.it/owner": "evil-override",
@@ -149,7 +149,7 @@ func TestMergeAnnotations(t *testing.T) {
 		assert.Equal(t, "safe-value", got["safe-anno"])
 	})
 
-	t.Run("reconcile.octovault.it/ prefix annotation 키는 user map에서 무시됨", func(t *testing.T) {
+	t.Run("reconcile.octovault.it/ prefix annotation이 충돌할 경우 system 값으로 덮어써짐", func(t *testing.T) {
 		system := map[string]string{"reconcile.octovault.it/data-hash": "realHash"}
 		user := map[string]string{
 			"reconcile.octovault.it/data-hash": "fakeHash",
