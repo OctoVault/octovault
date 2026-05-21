@@ -186,34 +186,34 @@ ObjectMeta.Annotations = merge(systemAnnotations, userAnnotations) // system 우
 
 ### 1. `valuesDoc` 파싱 - Annotations/Labels 필드 인식
 
-- [ ] `metadata.annotations`가 있는 values.yaml 파싱 시 `valuesDoc.Metadata.Annotations`에 map이 채워짐
-- [ ] `metadata.labels`가 있는 values.yaml 파싱 시 `valuesDoc.Metadata.Labels`에 map이 채워짐
-- [ ] `metadata.annotations` / `metadata.labels` 필드가 없어도 파싱 오류 없이 빈 map으로 처리됨
+- [x] `metadata.annotations`가 있는 values.yaml 파싱 시 `valuesDoc.Metadata.Annotations`에 map이 채워짐
+- [x] `metadata.labels`가 있는 values.yaml 파싱 시 `valuesDoc.Metadata.Labels`에 map이 채워짐
+- [x] `metadata.annotations` / `metadata.labels` 필드가 없어도 파싱 오류 없이 빈 map으로 처리됨
 
 ### 2. `mergeLabels` / `mergeAnnotations` 순수 함수
 
-- [ ] user map에 있는 키가 merged map에 포함됨
-- [ ] system map에 있는 키가 user map의 동일 키를 덮어씀 (system 우선)
-- [ ] user map이 nil이어도 system map만 반환되어 panic 없음
-- [ ] system map이 nil이어도 user map만 반환됨
-- [ ] 예약 prefix(`octovault.it/`, `reconcile.octovault.it/`, `app.kubernetes.io/`) 키는 user map에서 제거됨
+- [x] user map에 있는 키가 merged map에 포함됨
+- [x] system map에 있는 키가 user map의 동일 키를 덮어씀 (system 우선)
+- [x] user map이 nil이어도 system map만 반환되어 panic 없음
+- [x] system map이 nil이어도 user map만 반환됨
+- [x] 예약 prefix(`octovault.it/`, `reconcile.octovault.it/`, `app.kubernetes.io/`) 키는 user map에서 제거됨
 
 ### 3. ConfigMap 생성 - 사용자 labels/annotations 반영
 
-- [ ] values.yaml에 `metadata.labels`가 있을 때 생성된 ConfigMap의 `ObjectMeta.Labels`에 포함됨
-- [ ] values.yaml에 `metadata.annotations`가 있을 때 생성된 ConfigMap의 `ObjectMeta.Annotations`에 포함됨
-- [ ] 시스템 labels(`app.kubernetes.io/managed-by`, `octovault.it/*`)는 사용자 값과 무관하게 항상 존재함
-- [ ] 사용자가 시스템 키와 동일한 키를 지정해도 시스템 값이 유지됨
+- [x] values.yaml에 `metadata.labels`가 있을 때 생성된 ConfigMap의 `ObjectMeta.Labels`에 포함됨
+- [x] values.yaml에 `metadata.annotations`가 있을 때 생성된 ConfigMap의 `ObjectMeta.Annotations`에 포함됨
+- [x] 시스템 labels(`app.kubernetes.io/managed-by`, `octovault.it/*`)는 사용자 값과 무관하게 항상 존재함
+- [x] 사용자가 시스템 키와 동일한 키를 지정해도 시스템 값이 유지됨
 
 ### 4. Secret 생성 - 사용자 labels/annotations 반영
 
-- [ ] values.yaml에 `metadata.labels`가 있을 때 생성된 Secret의 `ObjectMeta.Labels`에 포함됨
-- [ ] values.yaml에 `metadata.annotations`가 있을 때 생성된 Secret의 `ObjectMeta.Annotations`에 포함됨
-- [ ] 시스템 labels/annotations는 항상 보존됨
-- [ ] 사용자가 시스템 키 덮어쓰기 시도해도 시스템 값 유지됨
+- [x] values.yaml에 `metadata.labels`가 있을 때 생성된 Secret의 `ObjectMeta.Labels`에 포함됨
+- [x] values.yaml에 `metadata.annotations`가 있을 때 생성된 Secret의 `ObjectMeta.Annotations`에 포함됨
+- [x] 시스템 labels/annotations는 항상 보존됨
+- [x] 사용자가 시스템 키 덮어쓰기 시도해도 시스템 값 유지됨
 
 ### 5. 업데이트 - labels/annotations 갱신
 
-- [ ] values.yaml의 `metadata.labels`가 변경된 후 Reconcile 시 기존 ConfigMap/Secret의 labels가 갱신됨
-- [ ] values.yaml에서 `metadata.labels` 전체 제거 후 Reconcile 시 이전 사용자 labels가 제거됨 (시스템 labels 유지)
-- [ ] values.yaml에서 `metadata.annotations` 전체 제거 후 Reconcile 시 이전 사용자 annotations가 제거됨 (시스템 annotations 유지)
+- [x] values.yaml의 `metadata.labels`가 변경된 후 Reconcile 시 기존 ConfigMap/Secret의 labels가 갱신됨
+- [x] values.yaml에서 `metadata.labels` 전체 제거 후 Reconcile 시 이전 사용자 labels가 제거됨 (시스템 labels 유지)
+- [x] values.yaml에서 `metadata.annotations` 전체 제거 후 Reconcile 시 이전 사용자 annotations가 제거됨 (시스템 annotations 유지)

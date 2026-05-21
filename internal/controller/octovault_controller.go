@@ -73,27 +73,6 @@ func labelSafe(v string) string {
 	return v[:31] + "-" + hex.EncodeToString(sum[:4])
 }
 
-func setManagedLabels(m *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) {
-	if m.Labels == nil {
-
-		m.Labels = map[string]string{}
-	}
-	m.Labels[LabelManagedBy] = "octovault"
-
-	ns := ov.Namespace
-	name := ov.Name
-	name = labelSafe(name)
-
-	m.Labels[LabelOVOwnerNS] = ns
-	m.Labels[LabelOVOwnerName] = name
-
-	if m.Annotations == nil {
-
-		m.Annotations = map[string]string{}
-	}
-	m.Annotations[AnnoOVOwnerFull] = ns + "/" + name
-}
-
 // values.yaml 모델
 // ConfigMap/Secret 공용: metadata.type
 // ConfigMap: spec.data[].{key.value}
@@ -607,25 +586,7 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 
 	cm.Labels = mergeLabels(sysLabels, userLabels)
 	cm.Annotations = mergeAnnotations(sysAnnotations, userAnnotations)
-
-	if !equalStringMap(cm.Data, data) {
-		if cm.Data == nil {
-
-			cm.Data = map[string]string{}
-		}
-
-		for k := range cm.Data {
-
-			delete(cm.Data, k)
-		}
-
-		for k, v := range data {
-
-			cm.Data[k] = v
-		}
-
-		return r.Update(ctx, &cm)
-	}
+	cm.Data = data
 
 	return r.Update(ctx, &cm)
 }
@@ -672,25 +633,7 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 
 	sec.Labels = mergeLabels(sysLabels, userLabels)
 	sec.Annotations = mergeAnnotations(sysAnnotations, userAnnotations)
-
-	if !equalBytesMap(sec.Data, data) {
-		if sec.Data == nil {
-
-			sec.Data = map[string][]byte{}
-		}
-
-		for k := range sec.Data {
-
-			delete(sec.Data, k)
-		}
-
-		for k, v := range data {
-
-			sec.Data[k] = v
-		}
-
-		return r.Update(ctx, &sec)
-	}
+	sec.Data = data
 
 	return r.Update(ctx, &sec)
 }
@@ -947,39 +890,6 @@ func sha256OfBytesMap(m map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func equalStringMap(a, b map[string]string) bool {
-	if len(a) != len(b) {
-
-		return false
-	}
-
-	for k, va := range a {
-		if vb, ok := b[k]; !ok || va != vb {
-
-			return false
-		}
-	}
-
-	return true
-}
-
-func equalBytesMap(a, b map[string][]byte) bool {
-	if len(a) != len(b) {
-
-		return false
-	}
-
-	for k, va := range a {
-		vb, ok := b[k]
-
-		if !ok || string(va) != string(vb) {
-
-			return false
-		}
-	}
-
-	return true
-}
 
 func getFromSecret(s *corev1.Secret, key string) string {
 	if v, ok := s.Data[key]; ok && len(v) > 0 {
