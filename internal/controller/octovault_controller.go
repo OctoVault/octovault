@@ -604,6 +604,9 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return nil
 	}
 
+	// OctoVault owns the resource it creates; labels/annotations are fully replaced
+	// by the desired state (system + user-specified keys). Third-party keys not
+	// declared in values.yaml are intentionally pruned on each reconcile.
 	cm.Labels = desiredLabels
 	cm.Annotations = desiredAnnotations
 	cm.Data = data
@@ -650,6 +653,9 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return nil
 	}
 
+	// OctoVault owns the resource it creates; labels/annotations are fully replaced
+	// by the desired state (system + user-specified keys). Third-party keys not
+	// declared in values.yaml are intentionally pruned on each reconcile.
 	sec.Labels = desiredLabels
 	sec.Annotations = desiredAnnotations
 	sec.Data = data
