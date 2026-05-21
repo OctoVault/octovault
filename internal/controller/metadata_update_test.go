@@ -262,6 +262,50 @@ func TestOctoVault_ConfigMap_UserAnnotations_RemovedWhenNotInValues(t *testing.T
 	assert.NotEmpty(t, updated.Annotations["reconcile.octovault.it/data-hash"], "system annotation data-hash must be preserved")
 }
 
+func TestOctoVault_Secret_UserAnnotations_RemovedWhenNotInValues(t *testing.T) {
+	// __analysis/2_METADATA.md > Red Task List > 5. 업데이트 - labels/annotations 갱신
+	// values.yaml에서 metadata.annotations 전체 제거 후 Reconcile 시 이전 사용자 annotations가 제거됨 (시스템 annotations 유지)
+
+	ctx := context.Background()
+	const path = "values/secret-remove-annos.yaml"
+
+	fetcher := &staticFetcher{
+		files: map[string][]byte{path: updateV1SecretYAML},
+		rev:   "rev1",
+	}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+
+	// 1차 Reconcile: user annotations 있음
+	_, err := rec.Reconcile(ctx, reconcile.Request{
+		NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace},
+	})
+	require.NoError(t, err)
+
+	var sec corev1.Secret
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: ov.Namespace, Name: "target-resource"}, &sec))
+	require.Equal(t, "first", sec.Annotations["release"], "precondition: annotation should exist after first reconcile")
+
+	// values.yaml에서 annotations 완전 제거
+	fetcher.files[path] = updateNoLabelsSecretYAML
+	fetcher.rev = "rev2"
+
+	// 2차 Reconcile
+	_, err = rec.Reconcile(ctx, reconcile.Request{
+		NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace},
+	})
+	require.NoError(t, err)
+
+	var updated corev1.Secret
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Namespace: ov.Namespace, Name: "target-resource"}, &updated))
+
+	// 사용자 annotations 제거됨
+	assert.NotContains(t, updated.Annotations, "release", "removed user annotation 'release' must not persist on Secret")
+
+	// 시스템 annotations 유지됨
+	assert.NotEmpty(t, updated.Annotations[AnnoOVOwnerFull], "system annotation octovault.it/owner must be preserved on Secret")
+	assert.NotEmpty(t, updated.Annotations["reconcile.octovault.it/data-hash"], "system annotation data-hash must be preserved on Secret")
+}
+
 func TestOctoVault_Secret_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 	// __analysis/2_METADATA.md > Red Task List > 5. 업데이트 - labels/annotations 갱신
 	// values.yaml에서 metadata.labels 전체 제거 후 Reconcile 시 이전 사용자 labels가 제거됨 (시스템 labels 유지)
