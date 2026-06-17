@@ -1,6 +1,6 @@
 image:
   repository: ghcr.io/octovault/octovault-operator
-  tag: latest
+  tag: v0.0.3-rc1
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
