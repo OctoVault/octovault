@@ -9,4 +9,4 @@ spec:
   repository: octovault/octovault
   path: /test/resources/secret-values.yaml
   targetName: my-secret
-  pollInterval: 1m
+  pollInterval: 5m

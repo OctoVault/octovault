@@ -9,4 +9,4 @@ spec:
   repository: octovault/octovault
   path: /test/resources/config-values.yaml
   targetName: my-configmap
-  pollInterval: 1m
+  pollInterval: 5m

@@ -280,29 +280,59 @@ func main() {
 		os.Exit(1)
 	}
 
+	gitUA := "octovault-operator"
+
+	gitBase := os.Getenv("GIT_API_URL") // 비우면 자동으로 https://api.github.com
+	gitRef := os.Getenv("GIT_REF")      // 비우면 디폴트 브랜치
+
+	// GIT_CRED_TTL 은 자격증명 검증 결과를 신뢰하는 기간이다.
+	// OctoRepository 컨트롤러의 재검증 주기와 같은 값을 쓰므로, 이 주기당
+	// GitHub 프로브는 최대 1회만 발생한다.
+	credTTL := parseDurationOr(os.Getenv("GIT_CRED_TTL"), github.DefaultAccessTTL)
+
+	orgChecker := github.NewAccessChecker(github.AccessOptions{
+		BaseURL:   gitBase,
+		UserAgent: gitUA,
+		TTL:       credTTL,
+	})
+
 	if err := (&controller.OctoRepositoryReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor("octorepository-controller"),
 		Workers:  ovMaxWorkers,
+		Checker:  orgChecker,
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoRepository")
 		os.Exit(1)
 	}
 
-	gitUA := "octovault-operator"
+	// 스키마 검증기가 없으므로 스키마 조회는 기본 비활성이다.
+	// 받아와도 쓰이지 않으므로 폴링마다 요청 1개를 낭비하고, 파일이 없는 레포에서는
+	// 매 폴링마다 404 를 유발한다(404 도 rate limit 에 카운트된다).
+	// 검증기를 붙인 뒤에는 GIT_SCHEMA_FILE 로 파일명을 지정해 다시 켤 수 있다.
+	var validator controller.Validator // TODO: 스키마 검증기 주입 지점
 
-	gitBase := os.Getenv("GIT_API_URL") // 비우면 자동으로 https://api.github.com
-	gitRef := os.Getenv("GIT_REF")      // 비우면 디폴트 브랜치
+	schemaFileName := strings.TrimSpace(os.Getenv("GIT_SCHEMA_FILE"))
+
+	// GIT_REVISION_FROM_COMMIT=true 로 두면 revision 을 커밋 SHA 로 기록하되
+	// 폴링마다 /commits 요청이 1개 추가된다. 기본은 contents 응답의 blob SHA 를 쓴다.
+	revisionFromCommit := strings.EqualFold(strings.TrimSpace(os.Getenv("GIT_REVISION_FROM_COMMIT")), "true")
 
 	gitFetcher := github.NewFetcher(github.Options{
-		BaseURL:        gitBase,
-		HTTPClient:     nil, // 기본 타임아웃 15s
-		SchemaFileName: "validator.schema.json",
-		Ref:            gitRef,
-		UserAgent:      gitUA,
+		BaseURL:            gitBase,
+		HTTPClient:         nil, // 기본 타임아웃 15s
+		SchemaFileName:     schemaFileName,
+		Ref:                gitRef,
+		UserAgent:          gitUA,
+		RevisionFromCommit: revisionFromCommit,
 	})
+
+	setupLog.Info("github fetcher configured",
+		"schemaFetch", schemaFileName != "",
+		"revisionFromCommit", revisionFromCommit,
+		"credentialCheckTTL", credTTL)
 
 	region := os.Getenv("AWS_REGION")
 	AwsSMTtlStr := os.Getenv("AWS_SM_TTL")
@@ -349,7 +379,8 @@ func main() {
 		Workers:  ovMaxWorkers,
 		AwsSM:    awsSMProv,
 		AwsPS:    awsPSProv,
-		// Validator: yourValidator,
+
+		Validator: validator,
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoVault")
@@ -394,6 +425,23 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// parseDurationOr 빈 값이거나 파싱 실패면 기본값을 쓴다.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+
+	s = strings.TrimSpace(s)
+	if s == "" {
+
+		return def
+	}
+
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+
+		return d
+	}
+
+	return def
 }
 
 // resolveWorkers: env(>0) flag(>0) > def

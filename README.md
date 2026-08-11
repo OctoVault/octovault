@@ -12,7 +12,7 @@ It also supports external secret sources referenced from your Git-backed `values
     - `OctoRepository` **(cluster-scoped)** — stores GitHub owner/organization and a reference to a namespaced credentials `Secret`. Any namespace can reuse it.
     - `OctoVault` **(namespaced)** — points at a repo/path (and optional `gitRef`), validates & applies data into a target `ConfigMap`/`Secret`.
 
-- **Status you can trust**: `Phase` (`Pending`/`Synced`/`Failed`), `ObservedRevision` (commit SHA), `ResolvedType` (`ConfigMap|Secret`), `AppliedDataHash`, `LastSyncedTime`, and a `Ready` condition.
+- **Status you can trust**: `Phase` (`Pending`/`Synced`/`Failed`), `ObservedRevision` (blob SHA of `values.yaml`; commit SHA with `GIT_REVISION_FROM_COMMIT=true`), `ResolvedType` (`ConfigMap|Secret`), `AppliedDataHash`, `LastSyncedTime`, and a `Ready` condition.
 
 ---
 
@@ -22,12 +22,17 @@ It also supports external secret sources referenced from your Git-backed `values
 2. Create a **cluster-scoped** `OctoRepository` pointing at `github.com/<owner>` and referencing that Secret **with namespace+name**.
 3. In your workload namespace, create an **OctoVault** referencing the `OctoRepository` by name, plus `repository`, `path` to `values.yaml`, and optional `gitRef` (branch/tag/SHA).
 4. The operator:
-    - fetches `values.yaml` (and `validator.schema.json` if present) via GitHub API,
+    - fetches `values.yaml` via GitHub API (one request per poll, conditional via `ETag`),
     - **optionally** pulls individual keys from **AWS Secrets Manager** (`type: AwsSecretManager`) or **AWS SSM Parameter Store** (`type: AwsParameterStore`),
     - validates and applies as a **ConfigMap** or **Secret**,
     - records status and emits Events.
 
 It keeps the target resource in sync on a timer (`spec.pollInterval`).
+
+Polling is designed to stay well inside GitHub's PAT rate limit: each poll issues a
+single `contents` request, sent as a conditional request with `If-None-Match`. GitHub
+does not count `304 Not Modified` responses against the primary rate limit, so an
+unchanged `values.yaml` costs nothing. See [Rate limits](#rate-limits).
 
 ###
 
@@ -74,7 +79,7 @@ sequenceDiagram
   OVC->>API: get Secret (team-a/my-org-credentials)
   OVC->>GH: fetch values.yaml at ref (gitRef or default)
   OVC->>API: create/update ConfigMap or Secret (app-ns)<br/>labels: managed-by=octovault, owner-ns/owner-name<br/>annotation: owner=ns/name
-  OVC->>API: update OctoVault.status<br/>phase=Synced, resolvedType=ConfigMap|Secret,<br/>observedRevision=<commit SHA>, lastSyncedTime=now
+  OVC->>API: update OctoVault.status<br/>phase=Synced, resolvedType=ConfigMap|Secret,<br/>observedRevision=<blob SHA>, lastSyncedTime=now
 ```
 
 ---
@@ -131,12 +136,15 @@ spec:
   gitRef: "release-2025-09"           # optional (branch/tag/SHA)
   targetName: "app-config"            # ConfigMap/Secret name
   targetNamespace: "demo"             # optional (defaults to this namespace)
-  pollInterval: "1m"                  # Go duration (default 1m)
+  pollInterval: "5m"                  # Go duration (default 5m)
 ```
 Status (abbrev.):
 ```yaml
 status:
   phase: Synced
+  # blob SHA of values.yaml — changes iff the file content changes.
+  # Set GIT_REVISION_FROM_COMMIT=true to record the commit SHA instead
+  # (costs one extra GitHub request per poll).
   observedRevision: 5b32c1f...
   resolvedType: ConfigMap
   appliedDataHash: 4a8d...
@@ -243,9 +251,10 @@ controller:
     port: 8443
   enableHTTP2: false
   env:
-    GIT_CRED_TTL: "3m"
+    GIT_CRED_TTL: "10m"  # PAT verification cache TTL / OctoRepository recheck period
     GIT_API_URL: ""      # default https://api.github.com
     GIT_REF: ""          # global default ref (fallback)
+    GIT_REVISION_FROM_COMMIT: "false"  # true adds one /commits request per poll
     AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
     AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
@@ -263,12 +272,50 @@ kubectl apply -f config/crd/bases/      # CRDs
 
 | Env var                      | Purpose                                                       | Default                  |
 |------------------------------|---------------------------------------------------------------|--------------------------|
-| `GIT_CRED_TTL` | Requeue period for `OctoRepository` reconciler (e.g. `1m`)    | `1m`                     |
+| `GIT_CRED_TTL`           | How long a PAT access check is trusted, and the `OctoRepository` recheck period. At most one GitHub probe per period. | `10m`                    |
 | `GIT_API_URL`            | GitHub API base (`https://api.github.com` or GHES URL)        | `https://api.github.com` |
 | `GIT_REF`                | **Global** default git ref if `OctoVault.spec.gitRef` is empty | *(none)*                 |
+| `GIT_REVISION_FROM_COMMIT` | Record `observedRevision` as the latest commit SHA. Costs **one extra request per poll**; when `false`, the blob SHA from the `contents` response is used instead. | `false`                  |
+| `GIT_SCHEMA_FILE`        | Schema file to fetch alongside `values.yaml`. Empty disables the request. Only useful once a validator is wired in — otherwise the response is fetched and discarded. | *(none)*                 |
 | `AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
 | `AWS_SM_TTL`             | AWS SM cache TTL (Go duration)                                | `1m`                     |
 | `AWS_PS_TTL`             | AWS Parameter Store cache TTL (Go duration)                   | `1m`                     |
+
+---
+
+## Rate limits
+
+A GitHub PAT is limited to **5,000 REST requests per hour**, and every `OctoVault`
+referencing the same `OctoRepository` shares that single budget. Requests that return
+`404` count against it; only `304 Not Modified` responses from conditional requests do not.
+
+**Request accounting per poll**
+
+| Source | Requests | Notes |
+|---|---|---|
+| `OctoVault` — fetch `values.yaml` | 1 | `0` charged when unchanged (`304` via `If-None-Match`) |
+| `OctoVault` — schema file | 0 | Only when `GIT_SCHEMA_FILE` is set |
+| `OctoVault` — commit revision | 0 | Only when `GIT_REVISION_FROM_COMMIT=true` |
+| `OctoRepository` — PAT access probe | ≤1 per `GIT_CRED_TTL` | Cached; `2` on the first check of a personal (non-org) account |
+
+At the defaults (`pollInterval: 5m`, `GIT_CRED_TTL: 10m`), a single `OctoVault` costs
+**at most 12 requests/hour**, and effectively far fewer once `values.yaml` stops changing.
+
+**When a limit is hit**
+
+The controller reads `X-RateLimit-Remaining`, `X-RateLimit-Reset` and `Retry-After`,
+distinguishes a primary limit from a secondary one, and requeues only after the reported
+reset instead of continuing to poll. Status moves to `Failed` with reason `RateLimited`
+(distinct from `AccessDenied`, which means the token genuinely lacks access).
+
+**If you still exhaust the limit**, in order of effect:
+
+1. Raise `spec.pollInterval` — cost scales linearly with it.
+2. Keep `GIT_REVISION_FROM_COMMIT=false` and `GIT_SCHEMA_FILE` unset (both are defaults).
+3. Raise `GIT_CRED_TTL`.
+4. Split `OctoVault` resources across several `OctoRepository` objects with different PATs —
+   the limit is per token, so this multiplies the available budget.
+5. Consider a GitHub App installation token (15,000/hour) instead of a PAT.
 
 ---
 
@@ -290,6 +337,25 @@ kubectl apply -f config/crd/bases/      # CRDs
 - Conditions and rich Status on both CRDs.
 - Kubernetes Events for error/success paths.
 - Prometheus metrics endpoint (HTTP/HTTPS) with optional authz.
+
+### GitHub rate-limit metrics
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `octovault_github_rate_limit_remaining{resource,credential}` | gauge | `X-RateLimit-Remaining` as last seen, per credential fingerprint |
+| `octovault_github_rate_limit_total{resource,credential}` | gauge | `X-RateLimit-Limit` |
+| `octovault_github_rate_limit_reset_timestamp_seconds{resource,credential}` | gauge | Unix time at which the window resets |
+| `octovault_github_requests_total{kind,code}` | counter | Requests issued, by endpoint kind and status code |
+| `octovault_github_conditional_hits_total{kind}` | counter | `304` responses — these do **not** consume rate limit |
+| `octovault_github_rate_limited_total{kind}` | counter | Requests rejected by a primary or secondary rate limit |
+| `octovault_github_credential_check_cache_total{result}` | counter | PAT verification cache `hit`/`miss` |
+
+`credential` is a short non-reversible fingerprint of the token, never the token itself.
+
+A healthy deployment shows `conditional_hits_total` growing at roughly the same rate as
+`requests_total`, and `rate_limit_remaining` staying flat. Alert on
+`octovault_github_rate_limit_remaining` dropping toward zero, or on any increase in
+`octovault_github_rate_limited_total`.
 
 ---
 

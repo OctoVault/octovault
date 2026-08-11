@@ -87,9 +87,13 @@ type OctoVaultSpec struct {
 	// +optional
 	TargetNamespace string `json:"targetNamespace,omitempty"`
 
-	// 폴링 간격 분 단위 (Default: 1m)
+	// 폴링 간격 분 단위 (Default: 5m)
+	//
+	// 폴링 1회당 GitHub API 요청 1개를 소모한다. 내용이 바뀌지 않았다면 조건부 요청이
+	// 304 로 처리되어 rate limit 에 카운트되지 않지만, 값을 과도하게 낮추면
+	// PAT 한도(5000/h)를 빠르게 소모한다.
 	// +optional
-	// +kubebuilder:default="1m"
+	// +kubebuilder:default="5m"
 	// +kubebuilder:validation:Pattern=^([0-9]+(m))+$
 	PollInterval string `json:"pollInterval,omitempty"`
 }

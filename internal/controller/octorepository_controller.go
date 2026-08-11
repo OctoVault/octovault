@@ -21,12 +21,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
 
+	ghclient "github.com/octovault/octovault/internal/github"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -65,9 +65,16 @@ type OctoRepositoryReconciler struct {
 	Checker OrgAccessChecker
 }
 
+// DefaultCredentialRecheckInterval 자격증명 재검증 주기.
+//
+// Checker 가 같은 TTL 로 결과를 캐시하므로 이 주기당 GitHub 요청은 최대 1회다.
+// 1분이던 이전 기본값은 OctoRepository 하나당 시간당 60~120 요청을 소모했다.
+const DefaultCredentialRecheckInterval = 10 * time.Minute
+
 var (
 	orgURLPattern = regexp.MustCompile(`^github\.com/([A-Za-z0-9_.-]+)$`)
 
+	// pollInterval GIT_CRED_TTL 로 조정한다. Checker 의 캐시 TTL 과 같은 값을 쓴다.
 	pollInterval = func() time.Duration {
 
 		if v := strings.TrimSpace(env("GIT_CRED_TTL")); v != "" {
@@ -77,7 +84,7 @@ var (
 			}
 		}
 
-		return time.Minute
+		return DefaultCredentialRecheckInterval
 	}()
 )
 
@@ -105,40 +112,45 @@ func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return res, nil
 	}
 
+	// 아래 헬퍼들은 "상태에 기록하고 다음 주기에 다시 본다"(res) 와
+	// "재시도가 의미 있는 일시적 오류"(err) 를 구분해 반환한다.
+	// 두 값을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 백오프로
+	// 재시도하기 때문에, 반드시 하나만 채워야 한다.
 	sec, res, err := r.loadCredentialsSecret(ctx, &orepo)
-	if err != nil || res.RequeueAfter > 0 {
+	if err != nil {
 
-		if err != nil {
+		logger.Error(err, "failed to load credentials secret "+orepo.Spec.CredentialsRef.Name)
+		return ctrl.Result{}, err
+	}
 
-			logger.Error(err, "failed to load credentials secret"+orepo.Spec.CredentialsRef.Name)
-		}
-		return res, err
+	if res.RequeueAfter > 0 {
+
+		return res, nil
 	}
 
 	if sec == nil {
 
-		logger.Error(
-			errors.New("secret is nil"),
-			"credentials secret is nil",
-		)
+		logger.Error(errors.New("secret is nil"), "credentials secret is nil")
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
 
 	pwd, res, err := r.extractAndDecodePassword(ctx, &orepo, sec)
-	if err != nil || res.RequeueAfter > 0 {
+	if err != nil {
 
-		if err != nil {
+		logger.Error(err, "failed to extract and decode password from secret "+sec.Name)
+		return ctrl.Result{}, err
+	}
 
-			logger.Error(err, "failed to extract and decode password from secret"+sec.Name)
-		}
-		return res, err
+	if res.RequeueAfter > 0 {
+
+		return res, nil
 	}
 
 	if res, done := r.checkAccessAndMaybeFail(ctx, &orepo, pwd); done {
 
-		logger.Error(err, "failed to check access and maybe fail")
 		return res, nil
 	}
+
 	return r.setSynced(ctx, &orepo, sec)
 }
 
@@ -192,7 +204,7 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 			return nil, ctrl.Result{RequeueAfter: pollInterval}, nil
 		}
 
-		return nil, ctrl.Result{RequeueAfter: pollInterval}, err
+		return nil, ctrl.Result{}, err
 	}
 
 	// track syncedSecretName
@@ -210,8 +222,9 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 	pwd := orgFromSecret(sec, "password")
 	if pwd == "" {
 
+		// 즉시 재시도해도 결과가 같다. 상태에 기록하고 다음 주기를 기다린다.
 		r.setFailed(ctx, o, "SecretMissingPassword", "secret missing password")
-		return "", ctrl.Result{RequeueAfter: pollInterval}, errors.New("secret missing password")
+		return "", ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
 
 	if orgFromSecret(sec, "passwordEncoding") == "base64" {
@@ -220,7 +233,7 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 		if err != nil {
 
 			r.setFailed(ctx, o, "SecretInvalidPasswordEncoding", fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err))
-			return "", ctrl.Result{RequeueAfter: pollInterval}, fmt.Errorf("failed to decode password from secret %s: %v", sec.Name, err)
+			return "", ctrl.Result{RequeueAfter: pollInterval}, nil
 		}
 
 		pwd = string(dec)
@@ -231,13 +244,35 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 
 func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository, pwd string) (ctrl.Result, bool) {
 
-	if err := r.checkOwnerAccess(ctx, o.Spec.Organization, pwd); err != nil {
+	logger := logf.FromContext(ctx)
 
-		r.setFailed(ctx, o, "AccessDenied", err.Error())
+	if r.Checker == nil {
+
+		r.setFailed(ctx, o, "CheckerNotConfigured", "controller was started without an org access checker")
 		return ctrl.Result{RequeueAfter: pollInterval}, true
 	}
 
-	return ctrl.Result{}, false
+	err := r.Checker.Check(ctx, o.Spec.Organization, pwd)
+	if err == nil {
+
+		return ctrl.Result{}, false
+	}
+
+	// rate limit 은 권한 문제가 아니다. 같은 이유로 계속 찔러봐야 한도만 더 소모하므로
+	// GitHub 이 알려준 리셋 시각까지 기다린다.
+	if retryAfter, limited := ghclient.RetryAfterFor(err); limited {
+
+		logger.Info("github rate limit hit while verifying credentials; backing off",
+			"organization", o.Spec.Organization, "retryAfter", retryAfter)
+
+		r.setFailed(ctx, o, "RateLimited", err.Error())
+
+		return ctrl.Result{RequeueAfter: retryAfter}, true
+	}
+
+	r.setFailed(ctx, o, "AccessDenied", err.Error())
+
+	return ctrl.Result{RequeueAfter: pollInterval}, true
 }
 
 func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (ctrl.Result, error) {
@@ -275,73 +310,6 @@ func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1
 		o.Status = desired
 		_ = r.Status().Update(ctx, o)
 		r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
-	}
-}
-
-func (r *OctoRepositoryReconciler) checkOwnerAccess(ctx context.Context, ownerURL, token string) error {
-
-	owner := strings.TrimPrefix(strings.TrimSpace(ownerURL), "github.com/")
-	if owner == "" {
-
-		return fmt.Errorf("invalid owner: expected 'github.com/<owner>', got %q", ownerURL)
-	}
-
-	// 1) try Organization
-	var err error
-	if err = probeList(ctx,
-		fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=1", owner),
-		"organization", owner, token); err == nil {
-
-		return nil
-	}
-
-	// 2) fallback: try User
-	var err2 error
-	if err2 = probeList(ctx,
-		fmt.Sprintf("https://api.github.com/users/%s/repos?per_page=1", owner),
-		"user", owner, token); err2 == nil {
-
-		return nil
-	}
-
-	// 둘 다 실패
-	return fmt.Errorf("org probe failed: %v; user probe failed: %v", err, err2)
-}
-
-func probeList(ctx context.Context, url, kind, owner, token string) error {
-
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, url, nil)
-	if err != nil {
-
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "octovault-operator")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-
-		return err
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-
-	switch resp.StatusCode {
-	case http.StatusOK:
-		return nil
-	case http.StatusUnauthorized:
-		return errors.New("401 unauthorized: invalid token or scope")
-	case http.StatusForbidden:
-		return errors.New("403 forbidden: token lacks access or rate limited")
-	case http.StatusNotFound:
-		return fmt.Errorf("404 not found: no access to the %s %q or it does not exist", kind, owner)
-	default:
-		return fmt.Errorf("%d unexpected: cannot verify %s %q", resp.StatusCode, kind, owner)
 	}
 }
 

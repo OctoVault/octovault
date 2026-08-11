@@ -47,6 +47,8 @@ spec:
               value: "{{ .Values.controller.env.GIT_API_URL }}"
             - name: GIT_REF
               value: "{{ .Values.controller.env.GIT_REF }}"
+            - name: GIT_REVISION_FROM_COMMIT
+              value: "{{ .Values.controller.env.GIT_REVISION_FROM_COMMIT }}"
             - name: AWS_REGION
               value: "{{ .Values.controller.env.AWS_REGION }}"
             - name: AWS_SM_TTL
