@@ -52,6 +52,10 @@ controller:
     # true 로 두면 observedRevision 을 커밋 SHA 로 기록하되 폴링마다 GitHub 요청이
     # 1개 추가된다. false 면 contents 응답에 포함된 blob SHA 를 그대로 쓴다.
     GIT_REVISION_FROM_COMMIT: "false"
+    # values.yaml 과 함께 조회할 스키마 파일명. 비우면 요청하지 않는다.
+    # 스키마 검증기가 주입되기 전까지는 받아와도 쓰이지 않고, 파일이 없는 레포에서는
+    # 매 폴링마다 404 를 유발하므로(404 도 rate limit 에 카운트됨) 비워 두어야 한다.
+    GIT_SCHEMA_FILE: ""
     # Aws Secret Manager Configuration
     AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
     AWS_SM_TTL: "3m"

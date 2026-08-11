@@ -49,6 +49,8 @@ spec:
               value: "{{ .Values.controller.env.GIT_REF }}"
             - name: GIT_REVISION_FROM_COMMIT
               value: "{{ .Values.controller.env.GIT_REVISION_FROM_COMMIT }}"
+            - name: GIT_SCHEMA_FILE
+              value: "{{ .Values.controller.env.GIT_SCHEMA_FILE }}"
             - name: AWS_REGION
               value: "{{ .Values.controller.env.AWS_REGION }}"
             - name: AWS_SM_TTL
