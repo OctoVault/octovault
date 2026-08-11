@@ -113,11 +113,11 @@ cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
-	$(GOLANGCI_LINT) run
+	GOTOOLCHAIN=$(LINT_GOTOOLCHAIN) $(GOLANGCI_LINT) run
 
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
-	$(GOLANGCI_LINT) run --fix
+	GOTOOLCHAIN=$(LINT_GOTOOLCHAIN) $(GOLANGCI_LINT) run --fix
 
 .PHONY: lint-config
 lint-config: golangci-lint ## Verify golangci-lint linter configuration
@@ -241,6 +241,19 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.1.6
 
+## GO_MOD_VERSION is the Go language version this module targets (e.g. 1.24.0).
+GO_MOD_VERSION ?= $(shell awk '/^go /{print $$2; exit}' go.mod)
+
+## LINT_GOTOOLCHAIN pins the toolchain used while linting.
+#
+# golangci-lint reads the standard library sources from GOROOT and type-checks them with
+# the go/types it was itself built against. If the local toolchain is newer than the one
+# golangci-lint was built with, it panics with
+#   "file requires newer Go version goX.Y (application built with goA.B)".
+# Pinning to the version declared in go.mod keeps the linter, the standard library and
+# CI in agreement. Set LINT_GOTOOLCHAIN=local to use whatever Go is on PATH.
+LINT_GOTOOLCHAIN ?= go$(GO_MOD_VERSION)
+
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
 $(KUSTOMIZE): $(LOCALBIN)
@@ -267,7 +280,39 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
+	$(call download-golangci-lint,$(GOLANGCI_LINT),$(GOLANGCI_LINT_VERSION))
+
+# download-golangci-lint fetches the official prebuilt golangci-lint binary.
+#
+# 'go install' is deliberately not used here:
+#   - upstream does not support installing golangci-lint that way,
+#   - it resolves every linter dependency through VCS when GOPROXY=direct or GOPRIVATE is
+#     broad, so it breaks outright once an upstream dependency repository disappears
+#     (github.com/tdakkota/asciicheck was deleted; the module proxy still serves it,
+#     a direct git fetch does not),
+#   - it rebuilds the linter against the local toolchain, which can differ from CI.
+# The prebuilt binary is exactly what the Lint workflow uses, so results match.
+#
+# $1 - target path with name of binary
+# $2 - version tag (e.g. v2.1.6)
+define download-golangci-lint
+@[ -f "$(1)-$(2)" ] || { \
+set -e ;\
+goos=$$(go env GOOS) ;\
+goarch=$$(go env GOARCH) ;\
+version=$$(echo "$(2)" | sed 's/^v//') ;\
+archive="golangci-lint-$${version}-$${goos}-$${goarch}" ;\
+url="https://github.com/golangci/golangci-lint/releases/download/$(2)/$${archive}.tar.gz" ;\
+echo "Downloading $${url}" ;\
+tmp=$$(mktemp -d) ;\
+trap 'rm -rf "$$tmp"' EXIT ;\
+curl -fsSL "$${url}" -o "$${tmp}/golangci-lint.tar.gz" ;\
+tar -xzf "$${tmp}/golangci-lint.tar.gz" -C "$${tmp}" ;\
+mv "$${tmp}/$${archive}/golangci-lint" $(1)-$(2) ;\
+chmod +x $(1)-$(2) ;\
+} ;\
+ln -sf $(1)-$(2) $(1)
+endef
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
