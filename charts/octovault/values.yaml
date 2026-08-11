@@ -44,10 +44,14 @@ controller:
   env:
     # 컨트롤러 동시성 (컨트롤러가 동시에 처리할 작업 수)
     MAX_WORKERS: 1
-    # OctoRepository 폴링 주기(컨트롤러가 읽는 ENV)
-    GIT_CRED_TTL: "3m"
+    # PAT 접근 권한 검증 결과를 신뢰하는 기간이자, OctoRepository 재검증 주기.
+    # 이 주기당 GitHub 프로브 요청은 최대 1회 발생한다. 낮추면 rate limit 소모가 늘어난다.
+    GIT_CRED_TTL: "10m"
     GIT_API_URL: "https://api.github.com"
     GIT_REF: "main" # empty if you want to use default branch
+    # true 로 두면 observedRevision 을 커밋 SHA 로 기록하되 폴링마다 GitHub 요청이
+    # 1개 추가된다. false 면 contents 응답에 포함된 blob SHA 를 그대로 쓴다.
+    GIT_REVISION_FROM_COMMIT: "false"
     # Aws Secret Manager Configuration
     AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
     AWS_SM_TTL: "3m"

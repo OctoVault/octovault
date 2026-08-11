@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
+	ghclient "github.com/octovault/octovault/internal/github"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -84,6 +85,16 @@ func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		Body:       body,
 		Header:     make(http.Header),
 	}, nil
+}
+
+// testChecker withHTTPStub 이 갈아끼우는 http.DefaultClient 를 그대로 쓰는 검증기.
+// 테스트마다 새로 만들어 캐시가 테스트 간에 섞이지 않게 한다.
+func testChecker() *ghclient.AccessChecker {
+
+	return ghclient.NewAccessChecker(ghclient.AccessOptions{
+		BaseURL:    "https://api.github.com",
+		HTTPClient: http.DefaultClient,
+	})
 }
 
 func withHTTPStub(t *testing.T, rules map[string]int) func() {
@@ -200,7 +211,9 @@ func TestOctoRepository_SecretMissingPassword(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "orepo"}})
-	require.Error(t, err)
+	// 설정 오류는 err 없이 RequeueAfter 만 반환한다. 둘을 함께 반환하면
+	// controller-runtime 이 RequeueAfter 를 버리고 5ms 지수 백오프로 재시도한다.
+	require.NoError(t, err)
 	require.Greater(t, int64(res.RequeueAfter), int64(0))
 
 	var got octovaultv1alpha1.OctoRepository
@@ -243,7 +256,7 @@ func TestOctoRepository_SecretInvalidBase64(t *testing.T) {
 	}
 
 	res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "orepo"}})
-	require.Error(t, err)
+	require.NoError(t, err)
 	require.Greater(t, int64(res.RequeueAfter), int64(0))
 
 	var got octovaultv1alpha1.OctoRepository
@@ -281,6 +294,7 @@ func TestOctoRepository_AccessDenied(t *testing.T) {
 		Client:   cl,
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(64),
+		Checker:  testChecker(),
 	}
 
 	// Stub: org 404, user 404 -> AccessDenied
@@ -330,6 +344,7 @@ func TestOctoRepository_Success_Synced(t *testing.T) {
 		Client:   cl,
 		Scheme:   scheme,
 		Recorder: record.NewFakeRecorder(64),
+		Checker:  testChecker(),
 	}
 
 	// Stub: org 200 OK

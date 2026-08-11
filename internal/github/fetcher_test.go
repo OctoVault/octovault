@@ -68,11 +68,12 @@ func TestFetcher_Fetch_PerCallRef_AndSchema_CommitWins(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
 
 	f := NewFetcher(Options{
-		BaseURL:        "https://api.github.com",
-		HTTPClient:     client,
-		SchemaFileName: "validator.schema.json",
-		Ref:            "main", // default ref (should be overridden by per-call ref)
-		UserAgent:      "utest",
+		BaseURL:            "https://api.github.com",
+		HTTPClient:         client,
+		SchemaFileName:     "validator.schema.json",
+		Ref:                "main", // default ref (should be overridden by per-call ref)
+		UserAgent:          "utest",
+		RevisionFromCommit: true,
 	})
 
 	stub.handler = func(r *http.Request) (*http.Response, error) {
@@ -143,10 +144,11 @@ func TestFetcher_Fetch_FallbackToBlobSHA_WhenCommitMissing(t *testing.T) {
 	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
 
 	f := NewFetcher(Options{
-		BaseURL:        "https://api.github.com",
-		HTTPClient:     client,
-		SchemaFileName: "validator.schema.json",
-		Ref:            defRef,
+		BaseURL:            "https://api.github.com",
+		HTTPClient:         client,
+		SchemaFileName:     "validator.schema.json",
+		Ref:                defRef,
+		RevisionFromCommit: true,
 	})
 
 	stub.handler = func(r *http.Request) (*http.Response, error) {
@@ -206,10 +208,11 @@ func TestFetcher_Fetch_DefaultRefUsed_WhenPerCallEmpty(t *testing.T) {
 	stub := &stubRT{t: t}
 	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
 	f := NewFetcher(Options{
-		BaseURL:        "https://api.github.com",
-		HTTPClient:     client,
-		SchemaFileName: "validator.schema.json",
-		Ref:            "default-branch",
+		BaseURL:            "https://api.github.com",
+		HTTPClient:         client,
+		SchemaFileName:     "validator.schema.json",
+		Ref:                "default-branch",
+		RevisionFromCommit: true,
 	})
 
 	valuesB64 := b64WithNewline("a: 1\n")
@@ -253,7 +256,11 @@ func TestFetcher_Fetch_PathEscaping(t *testing.T) {
 	valuesB64 := b64WithNewline("ok\n")
 	stub := &stubRT{t: t}
 	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
-	f := NewFetcher(Options{HTTPClient: client})
+	f := NewFetcher(Options{
+		HTTPClient:         client,
+		SchemaFileName:     "validator.schema.json",
+		RevisionFromCommit: true,
+	})
 
 	stub.handler = func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, encoded) {
@@ -298,7 +305,11 @@ func TestFetcher_fetchContentBase64_UnsupportedEncoding(t *testing.T) {
 		}), nil
 	}
 
-	_, _, err := f.fetchContentBase64(ctx, "https://api.github.com/whatever", "tok")
+	_, _, err := f.fetchContentBase64(ctx, contentRequest{
+		url:   "https://api.github.com/whatever",
+		token: "tok",
+		kind:  "contents",
+	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported encoding")
 }

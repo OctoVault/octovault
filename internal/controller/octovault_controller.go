@@ -30,6 +30,7 @@ import (
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 	awsps "github.com/octovault/octovault/internal/aws/parameter_store"
 	awssm "github.com/octovault/octovault/internal/aws/secret_manager"
+	ghclient "github.com/octovault/octovault/internal/github"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -52,6 +53,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// DefaultPollInterval spec.pollInterval 이 비었을 때의 기본 폴링 주기.
+//
+// 이전 기본값 1m 은 OctoVault 하나당 시간당 180 요청을 소모해 PAT 한도(5000/h)를
+// 28개면 고갈시켰다. ETag 조건부 요청과 함께 쓰면 실제 소모는 이보다 훨씬 낮다.
+const DefaultPollInterval = 5 * time.Minute
 
 const (
 	CondReady = "Ready"
@@ -194,26 +201,28 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	r.ensurePendingInit(ctx, &ov)
 
-	poll := parseDurationOr(ov.Spec.PollInterval, time.Minute)
+	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
 
+	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
+	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
+	// 지수 백오프로 재시도하는데, 그 재시도마다 GitHub 를 다시 호출하게 된다.
+	//
 	// 1) OctoRepository & PAT Secret
 	orepo, token, res, err := r.loadRepoAndToken(ctx, &ov)
-	if err != nil || res.RequeueAfter > 0 {
-		if err != nil {
+	if err != nil {
 
-			logger.Error(err, "failed to load repo and token")
-		}
+		logger.Error(err, "failed to load repo and token")
+		return ctrl.Result{}, err
+	}
 
-		return res, err
+	if res.RequeueAfter > 0 {
+
+		return res, nil
 	}
 
 	// 2) Fetch values.yaml
-	valuesYAML, schemaJSON, rev, res, err := r.tryFetch(ctx, &ov, orepo, token, poll)
-	if err != nil || res.RequeueAfter > 0 {
-		if err != nil {
-
-			logger.Error(err, "failed to fetch values")
-		}
+	valuesYAML, schemaJSON, rev, res := r.tryFetch(ctx, &ov, orepo, token, poll)
+	if res.RequeueAfter > 0 {
 
 		return res, nil
 	}
@@ -247,13 +256,15 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// 4) apply
 	appliedHash, res, err := r.applyOutput(ctx, &ov, doc, poll, resolvedType, rev, targetNS)
-	if err != nil || res.RequeueAfter > 0 {
-		if err != nil {
+	if err != nil {
 
-			logger.Error(err, "failed to apply output")
-		}
+		logger.Error(err, "failed to apply output")
+		return ctrl.Result{}, err
+	}
 
-		return res, err
+	if res.RequeueAfter > 0 {
+
+		return res, nil
 	}
 
 	// 5) status
@@ -274,19 +285,18 @@ func (r *OctoVaultReconciler) ensurePendingInit(ctx context.Context, ov *octovau
 
 func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaultv1alpha1.OctoVault) (*octovaultv1alpha1.OctoRepository, string, ctrl.Result, error) {
 
-	poll := parseDurationOr(ov.Spec.PollInterval, time.Minute)
+	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
 	var orepo octovaultv1alpha1.OctoRepository
 
 	if err := r.Get(ctx, types.NamespacedName{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo); err != nil {
 		if apierrors.IsNotFound(err) {
 
-			ov.Status = fail("OctoRepositoryNotFound", fmt.Sprintf("no OctoRepository %q", ov.Spec.OctoRepositoryRef.Name))
-			_ = r.Status().Update(ctx, ov)
+			r.updateStatusIfChanged(ctx, ov, fail("OctoRepositoryNotFound", fmt.Sprintf("no OctoRepository %q", ov.Spec.OctoRepositoryRef.Name)))
 
 			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 		}
 
-		return nil, "", ctrl.Result{RequeueAfter: poll}, err
+		return nil, "", ctrl.Result{}, err
 	}
 
 	var cred corev1.Secret
@@ -295,13 +305,12 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	if err := r.Get(ctx, secKey, &cred); err != nil {
 		if apierrors.IsNotFound(err) {
 
-			ov.Status = fail("CredentialsNotFound", fmt.Sprintf("no Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name))
-			_ = r.Status().Update(ctx, ov)
+			r.updateStatusIfChanged(ctx, ov, fail("CredentialsNotFound", fmt.Sprintf("no Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
 
 			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 		}
 
-		return nil, "", ctrl.Result{RequeueAfter: poll}, err
+		return nil, "", ctrl.Result{}, err
 	}
 
 	token := getFromSecret(&cred, "password")
@@ -328,7 +337,9 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	return &orepo, token, ctrl.Result{}, nil
 }
 
-func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha1.OctoVault, orepo *octovaultv1alpha1.OctoRepository, token string, poll time.Duration) ([]byte, []byte, string, ctrl.Result, error) {
+func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha1.OctoVault, orepo *octovaultv1alpha1.OctoRepository, token string, poll time.Duration) ([]byte, []byte, string, ctrl.Result) {
+
+	logger := logf.FromContext(ctx)
 
 	org := orepo.Spec.Organization
 	ref := strings.TrimSpace(ov.Spec.GitRef)
@@ -338,11 +349,25 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 
 	if err != nil {
 
+		// rate limit 이면 GitHub 이 알려준 리셋 시각까지 기다린다.
+		// poll 주기로 계속 찔러보면 secondary rate limit 까지 유발한다.
+		if retryAfter, limited := ghclient.RetryAfterFor(err); limited {
+
+			logger.Info("github rate limit hit while fetching values; backing off until reset",
+				"repository", repo, "path", ov.Spec.Path, "retryAfter", retryAfter)
+
+			r.updateStatusIfChanged(ctx, ov, fail("RateLimited", fmt.Sprintf("github rate limit: %v", err)))
+
+			return nil, nil, "", ctrl.Result{RequeueAfter: retryAfter}
+		}
+
+		logger.Error(err, "failed to fetch values", "repository", repo, "path", ov.Spec.Path)
 		r.updateStatusIfChanged(ctx, ov, fail("FetchFailed", fmt.Sprintf("failed to fetch values: %v", err)))
-		return nil, nil, "", ctrl.Result{RequeueAfter: poll}, err
+
+		return nil, nil, "", ctrl.Result{RequeueAfter: poll}
 	}
 
-	return valuesYAML, schemaJSON, rev, ctrl.Result{}, nil
+	return valuesYAML, schemaJSON, rev, ctrl.Result{}
 }
 
 func (r *OctoVaultReconciler) tryValidate(ov *octovaultv1alpha1.OctoVault, valuesYAML, schemaJSON []byte, poll time.Duration) ctrl.Result {
@@ -390,7 +415,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if k == "" {
 
 				r.updateStatusIfChanged(ctx, ov, fail("InvalidData", "data.key must be non-empty"))
-				return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("data.key must be non-empty")
+				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 			data[k] = it.Value
 		}
@@ -399,7 +424,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
-			return "", ctrl.Result{RequeueAfter: poll}, err
+			return "", ctrl.Result{}, err
 		}
 
 	case string(octovaultv1alpha1.OutputSecret):
@@ -423,7 +448,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 					r.updateStatusIfChanged(ctx, ov, fail("AwsNotConfigured", "AwsSecretManager type requires controller to be configured with AWS provider"))
 
-					return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("AwsSecretManager type requires controller to be configured with AWS provider")
+					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				name := strings.TrimSpace(it.Name)
@@ -432,16 +457,19 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail("InvalidData",
 						fmt.Sprintf("Secret data item %q missing 'name' for AwsSecretManager", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("secret data item %q missing 'name' for AwsSecretManager", name)
+					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				val, meta, err2 := r.AwsSM.GetSecret(ctx, name)
 				if err2 != nil {
 
+					// 외부 소스 조회 실패는 poll 주기로 물러난다. err 를 반환하면 5ms 백오프로
+					// 재시도하면서 이번엔 AWS 쪽 throttling 을 유발한다.
+					// AwsParameterStore 경로와 동일하게 처리한다.
 					r.updateStatusIfChanged(ctx, ov, fail("AwsSecretFetchFailed",
 						fmt.Sprintf("failed to fetch from AWS secret manager %q: %v", name, err2)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("failed to fetch from AWS secret manager %q: %v", name, err2)
+					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				if jk := strings.TrimSpace(it.JSONKey); jk != "" {
@@ -452,7 +480,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 						r.updateStatusIfChanged(ctx, ov, fail("AWSSecretJSONKeyError",
 							fmt.Sprintf("aws secret %q jsonKey=%q: %v", name, jk, err)))
 
-						return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("aws secret %q jsonKey=%q: %v", name, jk, err)
+						return "", ctrl.Result{RequeueAfter: poll}, nil
 					}
 				}
 
@@ -472,7 +500,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail("ExternalSourceUnavailable",
 						fmt.Sprintf("AwsParameterStore provider unavailable for %q", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("AwsParameterStore provider unavailable for %q", k)
+					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 				paramName := strings.TrimSpace(it.Name)
 				if paramName == "" {
@@ -480,7 +508,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail("InvalidData",
 						fmt.Sprintf("Secret data item %q requires .name for AwsParameterStore", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("secret data item %q requires .name for AwsParameterStore", k)
+					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 				// SecureString 가능성이 있으므로 복호화 활성화
 				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, true)
@@ -500,7 +528,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 						r.updateStatusIfChanged(ctx, ov, fail("ExternalJSONExtractFailed",
 							fmt.Sprintf("aws parameter %q jsonKey=%q: %v", paramName, jk, err)))
 
-						return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("aws parameter %q jsonKey=%q", paramName, jk)
+						return "", ctrl.Result{RequeueAfter: poll}, nil
 					}
 
 					pv = out
@@ -513,7 +541,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				r.updateStatusIfChanged(ctx, ov, fail("UnsupportedDataType",
 					fmt.Sprintf("unsupported data.type %q for key %q", it.Type, k)))
 
-				return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("unsupported data.type %q for key %q", it.Type, k)
+				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 		}
 
@@ -523,7 +551,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
 
-			return "", ctrl.Result{RequeueAfter: poll}, err
+			return "", ctrl.Result{}, err
 		}
 
 		// AWS SM 등 외부 참조에 대한 요약 상태 업데이트
@@ -995,7 +1023,14 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return reqs
 	})
 
-	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV)
+	// OctoRepository 의 spec 이 바뀔 때만 fan-out 한다.
+	//
+	// predicate 가 없으면 status-only 업데이트와 informer 의 주기적 resync 까지
+	// 이 매핑을 태우고, 그때마다 해당 OctoRepository 를 참조하는 모든 OctoVault 가
+	// 한꺼번에 큐에 들어간다. rate limit 초과 -> 프로브 403 -> status 변경 ->
+	// 전체 fan-out -> 요청 폭증 -> 한도 더 초과 로 이어지는 양성 피드백 루프가 된다.
+	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV,
+		builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 
 	return b.Complete(r)
 }

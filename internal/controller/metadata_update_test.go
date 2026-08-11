@@ -19,6 +19,12 @@ import (
 
 // __analysis/2_METADATA.md > Red Task List > 5. 업데이트 - labels/annotations 갱신
 
+// 업데이트 시나리오의 1차/2차 reconcile 리비전
+const (
+	UpdateRevBefore = "rev1"
+	UpdateRevAfter  = "rev2"
+)
+
 // --- 업데이트 시나리오용 YAML 픽스처 ---
 
 var updateV1ConfigMapYAML = []byte(`
@@ -140,7 +146,7 @@ func TestOctoVault_ConfigMap_Labels_AreUpdated_OnNextReconcile(t *testing.T) {
 
 	fetcher := &staticFetcher{
 		files: map[string][]byte{path: updateV1ConfigMapYAML},
-		rev:   "rev1",
+		rev:   UpdateRevBefore,
 	}
 	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
 
@@ -157,7 +163,7 @@ func TestOctoVault_ConfigMap_Labels_AreUpdated_OnNextReconcile(t *testing.T) {
 
 	// values.yaml 변경: v2 labels로 교체
 	fetcher.files[path] = updateV2ConfigMapYAML
-	fetcher.rev = "rev2"
+	fetcher.rev = UpdateRevAfter
 
 	// 2차 Reconcile: labels 갱신 확인
 	_, err = rec.Reconcile(ctx, reconcile.Request{
@@ -182,7 +188,7 @@ func TestOctoVault_ConfigMap_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 
 	fetcher := &staticFetcher{
 		files: map[string][]byte{path: updateV1ConfigMapYAML},
-		rev:   "rev1",
+		rev:   UpdateRevBefore,
 	}
 	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
 
@@ -198,7 +204,7 @@ func TestOctoVault_ConfigMap_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 
 	// values.yaml에서 labels 완전 제거
 	fetcher.files[path] = updateNoLabelsConfigMapYAML
-	fetcher.rev = "rev2"
+	fetcher.rev = UpdateRevAfter
 
 	// 2차 Reconcile
 	_, err = rec.Reconcile(ctx, reconcile.Request{
@@ -227,7 +233,7 @@ func TestOctoVault_ConfigMap_UserAnnotations_RemovedWhenNotInValues(t *testing.T
 
 	fetcher := &staticFetcher{
 		files: map[string][]byte{path: updateV1ConfigMapYAML},
-		rev:   "rev1",
+		rev:   UpdateRevBefore,
 	}
 	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
 
@@ -243,7 +249,7 @@ func TestOctoVault_ConfigMap_UserAnnotations_RemovedWhenNotInValues(t *testing.T
 
 	// values.yaml에서 annotations 완전 제거
 	fetcher.files[path] = updateNoLabelsConfigMapYAML
-	fetcher.rev = "rev2"
+	fetcher.rev = UpdateRevAfter
 
 	// 2차 Reconcile
 	_, err = rec.Reconcile(ctx, reconcile.Request{
@@ -271,7 +277,7 @@ func TestOctoVault_Secret_UserAnnotations_RemovedWhenNotInValues(t *testing.T) {
 
 	fetcher := &staticFetcher{
 		files: map[string][]byte{path: updateV1SecretYAML},
-		rev:   "rev1",
+		rev:   UpdateRevBefore,
 	}
 	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
 
@@ -287,7 +293,7 @@ func TestOctoVault_Secret_UserAnnotations_RemovedWhenNotInValues(t *testing.T) {
 
 	// values.yaml에서 annotations 완전 제거
 	fetcher.files[path] = updateNoLabelsSecretYAML
-	fetcher.rev = "rev2"
+	fetcher.rev = UpdateRevAfter
 
 	// 2차 Reconcile
 	_, err = rec.Reconcile(ctx, reconcile.Request{
@@ -315,7 +321,7 @@ func TestOctoVault_Secret_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 
 	fetcher := &staticFetcher{
 		files: map[string][]byte{path: updateV1SecretYAML},
-		rev:   "rev1",
+		rev:   UpdateRevBefore,
 	}
 	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
 
@@ -331,7 +337,7 @@ func TestOctoVault_Secret_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 
 	// values.yaml에서 labels 완전 제거
 	fetcher.files[path] = updateNoLabelsSecretYAML
-	fetcher.rev = "rev2"
+	fetcher.rev = UpdateRevAfter
 
 	// 2차 Reconcile
 	_, err = rec.Reconcile(ctx, reconcile.Request{
