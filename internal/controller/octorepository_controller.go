@@ -134,13 +134,7 @@ func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: pollInterval}, nil
 	}
 
-	pwd, res, err := r.extractAndDecodePassword(ctx, &orepo, sec)
-	if err != nil {
-
-		logger.Error(err, "failed to extract and decode password from secret "+sec.Name)
-		return ctrl.Result{}, err
-	}
-
+	pwd, res := r.extractAndDecodePassword(ctx, &orepo, sec)
 	if res.RequeueAfter > 0 {
 
 		return res, nil
@@ -217,14 +211,16 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 	return &sec, ctrl.Result{}, nil
 }
 
-func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (string, ctrl.Result, error) {
+// extractAndDecodePassword 실패는 모두 "상태에 기록하고 다음 주기를 기다린다" 로 처리되므로
+// error 를 반환하지 않는다. RequeueAfter 가 설정되면 호출자는 그대로 물러나야 한다.
+func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (string, ctrl.Result) {
 
 	pwd := orgFromSecret(sec, "password")
 	if pwd == "" {
 
-		// 즉시 재시도해도 결과가 같다. 상태에 기록하고 다음 주기를 기다린다.
+		// 즉시 재시도해도 결과가 같다.
 		r.setFailed(ctx, o, "SecretMissingPassword", "secret missing password")
-		return "", ctrl.Result{RequeueAfter: pollInterval}, nil
+		return "", ctrl.Result{RequeueAfter: pollInterval}
 	}
 
 	if orgFromSecret(sec, "passwordEncoding") == "base64" {
@@ -233,13 +229,13 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 		if err != nil {
 
 			r.setFailed(ctx, o, "SecretInvalidPasswordEncoding", fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err))
-			return "", ctrl.Result{RequeueAfter: pollInterval}, nil
+			return "", ctrl.Result{RequeueAfter: pollInterval}
 		}
 
 		pwd = string(dec)
 	}
 
-	return pwd, ctrl.Result{}, nil
+	return pwd, ctrl.Result{}
 }
 
 func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository, pwd string) (ctrl.Result, bool) {
