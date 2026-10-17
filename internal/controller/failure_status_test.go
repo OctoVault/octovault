@@ -86,3 +86,30 @@ func TestOctoVault_DeleteAfterFailure_RetainsTarget(t *testing.T) {
 	assert.Empty(t, cm.OwnerReferences, "ownerRef must be removed so GC keeps the target")
 	assert.Equal(t, ov.Namespace+"/"+ov.Name, cm.Annotations[AnnoOVRetainedBy])
 }
+
+func TestOctoVault_DeleteWithEmptyResolvedType_RetainsTarget(t *testing.T) {
+	// 이전 버전이 실패 시 ResolvedType 을 지운 상태로 남은 OctoVault 도 대상을 남겨야 한다.
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	fetcher := &staticFetcher{files: map[string][]byte{path: sampleSecretYAML}, rev: "rev1"}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	current.Status = octovaultv1alpha1.OctoVaultStatus{Phase: octovaultv1alpha1.OVPhaseFailed}
+	require.NoError(t, cl.Status().Update(ctx, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var sec corev1.Secret
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
+	assert.Empty(t, sec.OwnerReferences, "ownerRef must be removed so GC keeps the target")
+}

@@ -186,7 +186,13 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !ov.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&ov, FinalizerOV) {
 
-			_ = r.orphanTargets(ctx, &ov)
+			// 실패한 채로 파이널라이저를 지우면 ownerRef 가 남아 대상이 GC 로 삭제된다.
+			if err := r.orphanTargets(ctx, &ov); err != nil {
+
+				logger.Error(err, "failed to orphan targets; keeping finalizer")
+				return ctrl.Result{}, err
+			}
+
 			controllerutil.RemoveFinalizer(&ov, FinalizerOV)
 
 			if err := r.Update(ctx, &ov); err != nil {
@@ -817,12 +823,19 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	tryCM := func() {
 
 		var cm corev1.ConfigMap
-		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &cm); err == nil {
-			if removeOwner(&cm.ObjectMeta) {
-				if err := r.Update(ctx, &cm); err != nil && firstErr == nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &cm); err != nil {
+			if !apierrors.IsNotFound(err) && firstErr == nil {
 
-					firstErr = err
-				}
+				firstErr = err
+			}
+
+			return
+		}
+
+		if removeOwner(&cm.ObjectMeta) {
+			if err := r.Update(ctx, &cm); err != nil && firstErr == nil {
+
+				firstErr = err
 			}
 		}
 	}
@@ -830,12 +843,19 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	trySec := func() {
 
 		var sec corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &sec); err == nil {
-			if removeOwner(&sec.ObjectMeta) {
-				if err := r.Update(ctx, &sec); err != nil && firstErr == nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &sec); err != nil {
+			if !apierrors.IsNotFound(err) && firstErr == nil {
 
-					firstErr = err
-				}
+				firstErr = err
+			}
+
+			return
+		}
+
+		if removeOwner(&sec.ObjectMeta) {
+			if err := r.Update(ctx, &sec); err != nil && firstErr == nil {
+
+				firstErr = err
 			}
 		}
 	}
@@ -846,7 +866,10 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	case strings.ToLower(string(octovaultv1alpha1.OutputSecret)):
 		trySec()
 	default:
-		return fmt.Errorf("unknown resolvedType %q", ov.Status.ResolvedType)
+		// ResolvedType 이 비어 있어도 대상이 있을 수 있다(이전 버전은 실패 시 상태를 지웠다).
+		// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 둘 다 시도해도 안전하다.
+		tryCM()
+		trySec()
 	}
 
 	return firstErr
