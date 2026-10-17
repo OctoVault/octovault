@@ -144,7 +144,7 @@ metadata:
 spec:
   octoRepositoryRef:
     name: my-org                      # cluster-scoped OctoRepository
-  repository: "my-org/my-repo"        # owner/repo
+  repository: "my-org/my-repo"        # owner/repo; owner must match the OctoRepository organization
   path: "config/environments/prod.yaml"
   gitRef: "release-2025-09"           # optional (branch/tag/SHA)
   targetName: "app-config"            # ConfigMap/Secret name
@@ -209,7 +209,7 @@ spec:
     - key: PS_FOO                   # from AWS SSM Parameter Store
       type: AwsParameterStore
       name: "/prod/app/param"       # parameter name (supporting path-style)
-      withDecryption: true          # set true for SecureString
+      withDecryption: true          # optional, default true; false returns SecureString ciphertext
       jsonKey: "nested.key"         # optional dot-path into JSON. Omit for whole value.
 ```
 
@@ -230,7 +230,7 @@ spec:
 > 
 > - Supports String, SecureString, and StringList.
 > 
-> -	Use withDecryption: true when the type is SecureString.
+> -	withDecryption defaults to true. Set it to false only if you want the encrypted SecureString value.
 > 
 > -	If the parameter value is JSON, you may extract a field via jsonKey. Non-string nodes are serialized to JSON.
 > 
