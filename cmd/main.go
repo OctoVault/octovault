@@ -269,17 +269,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Secret -> OctoRepository controller
-	if err := (&controller.RepoSecretReconciler{
-		Client:  mgr.GetClient(),
-		Scheme:  mgr.GetScheme(),
-		Workers: ovMaxWorkers,
-	}).SetupWithManager(mgr); err != nil {
-
-		setupLog.Error(err, "unable to create controller", "controller", "OctoRepositorySecret")
-		os.Exit(1)
-	}
-
 	gitUA := "octovault-operator"
 
 	gitBase := os.Getenv("GIT_API_URL") // 비우면 자동으로 https://api.github.com

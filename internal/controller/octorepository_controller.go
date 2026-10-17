@@ -46,6 +46,8 @@ import (
 )
 
 const (
+	// LabelRepo 이 라벨이 붙은 Secret 이 바뀌면 그 Secret 을 참조하는 OctoRepository 를 다시 검증한다.
+	LabelRepo     = "octovault.it/repository"
 	LabelRepoTrue = "true"
 )
 
@@ -438,5 +440,21 @@ func env(k string) string {
 
 		return v
 	}
+	return ""
+}
+
+func orgFromSecret(secret *corev1.Secret, org string) string {
+	if v, ok := secret.Data[org]; ok && len(v) > 0 {
+
+		return string(v)
+	}
+
+	if secret.StringData != nil {
+		if v, ok := secret.StringData[org]; ok && v != "" {
+
+			return v
+		}
+	}
+
 	return ""
 }
