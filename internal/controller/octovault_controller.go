@@ -653,9 +653,13 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next.ResolvedType = resolvedType
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
-	r.updateStatusIfChanged(ctx, ov, next)
-	r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
-		"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
+	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
+	// 의미 없는 이벤트가 쌓인다.
+	if r.updateStatusIfChanged(ctx, ov, next) {
+
+		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
+			"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
+	}
 }
 
 func (r *OctoVaultReconciler) fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
@@ -915,18 +919,23 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	return firstErr
 }
 
-func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *octovaultv1alpha1.OctoVault, desired octovaultv1alpha1.OctoVaultStatus) {
+// updateStatusIfChanged 상태가 바뀌어 기록에 성공했으면 true 를 반환한다.
+func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *octovaultv1alpha1.OctoVault, desired octovaultv1alpha1.OctoVaultStatus) bool {
+
 	prev := ov.Status
 	if statusEqualOV(prev, desired) {
 
-		return
+		return false
 	}
 
 	ov.Status = desired
 	if err := r.Status().Update(ctx, ov); err != nil {
 
 		logf.FromContext(ctx).Error(err, "status update failed")
+		return false
 	}
+
+	return true
 }
 
 // fail 직전 상태를 바탕으로 실패 상태를 만든다.
