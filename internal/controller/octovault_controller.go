@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -370,25 +369,18 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 		return nil, "", ctrl.Result{}, err
 	}
 
-	token := getFromSecret(&cred, "password")
-	if token == "" {
+	token, err := tokenFromSecret(&cred)
+	if err != nil {
 
-		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretMissingPassword", missingPasswordMessage(&cred, orepo.Name)))
+		msg := missingPasswordMessage(&cred, orepo.Name)
+		if !errors.Is(err, errMissingPassword) {
 
-		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
-	}
-
-	if enc := getFromSecret(&cred, "passwordEncoding"); enc == "base64" {
-
-		dec, err := base64.StdEncoding.DecodeString(token)
-		if err != nil {
-
-			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretInvalidPasswordEncoding", fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
-
-			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
+			msg = fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)
 		}
 
-		token = string(dec)
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, tokenFailureReason(err), msg))
+
+		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	return &orepo, token, ctrl.Result{}, nil
@@ -1145,22 +1137,6 @@ func sha256OfBytesMap(m map[string][]byte) string {
 	}
 
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func getFromSecret(s *corev1.Secret, key string) string {
-	if v, ok := s.Data[key]; ok && len(v) > 0 {
-
-		return string(v)
-	}
-
-	if s.StringData != nil {
-		if v, ok := s.StringData[key]; ok && v != "" {
-
-			return v
-		}
-	}
-
-	return ""
 }
 
 func summarizeExtRefs(refs []octovaultv1alpha1.ExternalRefStatus) string {

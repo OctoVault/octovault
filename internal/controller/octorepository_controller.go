@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"regexp"
@@ -222,24 +221,18 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 // error 를 반환하지 않는다. RequeueAfter 가 설정되면 호출자는 그대로 물러나야 한다.
 func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (string, ctrl.Result) {
 
-	pwd := orgFromSecret(sec, "password")
-	if pwd == "" {
+	// 실패는 즉시 재시도해도 결과가 같다.
+	pwd, err := tokenFromSecret(sec)
+	if err != nil {
 
-		// 즉시 재시도해도 결과가 같다.
-		r.setFailed(ctx, o, "SecretMissingPassword", "secret missing password")
-		return "", ctrl.Result{RequeueAfter: pollInterval}
-	}
+		msg := "secret missing password"
+		if !errors.Is(err, errMissingPassword) {
 
-	if orgFromSecret(sec, "passwordEncoding") == "base64" {
-
-		dec, err := base64.StdEncoding.DecodeString(pwd)
-		if err != nil {
-
-			r.setFailed(ctx, o, "SecretInvalidPasswordEncoding", fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err))
-			return "", ctrl.Result{RequeueAfter: pollInterval}
+			msg = fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err)
 		}
 
-		pwd = string(dec)
+		r.setFailed(ctx, o, tokenFailureReason(err), msg)
+		return "", ctrl.Result{RequeueAfter: pollInterval}
 	}
 
 	return pwd, ctrl.Result{}
@@ -466,21 +459,5 @@ func env(k string) string {
 
 		return v
 	}
-	return ""
-}
-
-func orgFromSecret(secret *corev1.Secret, org string) string {
-	if v, ok := secret.Data[org]; ok && len(v) > 0 {
-
-		return string(v)
-	}
-
-	if secret.StringData != nil {
-		if v, ok := secret.StringData[org]; ok && v != "" {
-
-			return v
-		}
-	}
-
 	return ""
 }
