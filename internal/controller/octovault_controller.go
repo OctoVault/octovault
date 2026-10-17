@@ -66,6 +66,15 @@ import (
 // 28개면 고갈시켰다. ETag 조건부 요청과 함께 쓰면 실제 소모는 이보다 훨씬 낮다.
 const DefaultPollInterval = 5 * time.Minute
 
+// MinPollInterval spec.pollInterval 의 하한. 이보다 짧은 값은 이 값으로 올린다.
+// 한 PAT 를 여러 OctoVault 가 나눠 쓰므로 짧은 주기 하나가 전체 한도를 잠식할 수 있다.
+const MinPollInterval = 30 * time.Second
+
+// pollIntervalOf spec.pollInterval 을 해석해 기본값과 하한을 적용한다.
+func pollIntervalOf(ov *octovaultv1alpha1.OctoVault) time.Duration {
+	return max(ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval), MinPollInterval)
+}
+
 const (
 	CondReady = "Ready"
 
@@ -255,7 +264,7 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 	r.ensurePendingInit(ctx, &ov)
 
-	poll := ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := pollIntervalOf(&ov)
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
@@ -358,7 +367,7 @@ func (r *OctoVaultReconciler) ensurePendingInit(ctx context.Context, ov *octovau
 
 func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaultv1alpha1.OctoVault) (*octovaultv1alpha1.OctoRepository, string, ctrl.Result, error) {
 
-	poll := ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := pollIntervalOf(ov)
 	var orepo octovaultv1alpha1.OctoRepository
 
 	if err := r.Get(ctx, types.NamespacedName{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo); err != nil {
