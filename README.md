@@ -41,7 +41,7 @@ unchanged `values.yaml` costs nothing. See [Rate limits](#rate-limits).
 
 graph LR
   subgraph NS_X["Namespace: team-a"]
-    S["Secret: my-org-credentials<br/>label: octovault.it/repository=true<br/>(opt) ann: octovault.it/organization=github.com/my-org"]
+    S["Secret: my-org-credentials<br/>label: octovault.it/repository=true"]
   end
 
   subgraph Cluster["Cluster Scope"]
@@ -64,13 +64,12 @@ graph LR
 sequenceDiagram
   participant U as User
   participant API as Kubernetes API
-  participant RS as RepoSecretReconciler
   participant ORC as OctoRepositoryReconciler
   participant OVC as OctoVaultReconciler
   participant GH as GitHub API
 
-  U->>API: apply Secret (my-org-credentials)<br/>labels: octovault.it/repository=true<br/>(opt) ann: organization=github.com/my-org
-  RS->>API: create OctoRepository (Cluster) named "my-org-credentials" (if not present)
+  U->>API: apply Secret (my-org-credentials)<br/>labels: octovault.it/repository=true
+  U->>API: apply OctoRepository (Cluster) "my-org-credentials"<br/>spec.credentialsRef=team-a/my-org-credentials
   ORC->>API: get Secret (team-a/my-org-credentials)
   ORC->>API: update OctoRepository.status = Synced / Ready
 
@@ -116,8 +115,8 @@ stringData:
   # passwordEncoding: base64     # optional, if password is base64 text
 ```
 
-- Label: `octovault.it/repository: "true"`
-- Organization: `octovault.it/organization: github.com/my-org` (or `data.organization`)
+- Label: `octovault.it/repository: "true"` — recommended. Changes to a labelled Secret re-verify the `OctoRepository`s that reference it right away; without the label, a rotated token is picked up on the next `GIT_CRED_TTL` recheck. Only labelled Secrets are held in the controller's cache.
+- The `OctoRepository` must be created explicitly; the operator does not create one from the Secret.
 
 ### OctoVault (namespaced)
 
