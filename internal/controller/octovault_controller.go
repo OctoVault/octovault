@@ -255,7 +255,7 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 	r.ensurePendingInit(ctx, &ov)
 
-	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
@@ -358,7 +358,7 @@ func (r *OctoVaultReconciler) ensurePendingInit(ctx context.Context, ov *octovau
 
 func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaultv1alpha1.OctoVault) (*octovaultv1alpha1.OctoRepository, string, ctrl.Result, error) {
 
-	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
 	var orepo octovaultv1alpha1.OctoRepository
 
 	if err := r.Get(ctx, types.NamespacedName{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo); err != nil {
@@ -1127,7 +1127,10 @@ func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 	return readyConditionEqual(a.Conditions, b.Conditions)
 }
 
-func parseDurationOr(s string, d time.Duration) time.Duration {
+// ParseDurationOr 비었거나, 파싱에 실패하거나, 0 이하면 기본값을 쓴다.
+func ParseDurationOr(s string, d time.Duration) time.Duration {
+
+	s = strings.TrimSpace(s)
 	if s == "" {
 
 		return d

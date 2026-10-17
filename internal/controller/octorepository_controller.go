@@ -83,17 +83,7 @@ var (
 	orgURLPattern = regexp.MustCompile(`^github\.com/([A-Za-z0-9_.-]+)$`)
 
 	// pollInterval GIT_CRED_TTL 로 조정한다. Checker 의 캐시 TTL 과 같은 값을 쓴다.
-	pollInterval = func() time.Duration {
-
-		if v := strings.TrimSpace(os.Getenv("GIT_CRED_TTL")); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d > 0 {
-
-				return d
-			}
-		}
-
-		return DefaultCredentialRecheckInterval
-	}()
+	pollInterval = ParseDurationOr(os.Getenv("GIT_CRED_TTL"), DefaultCredentialRecheckInterval)
 )
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to

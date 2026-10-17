@@ -283,7 +283,7 @@ func main() {
 	// GIT_CRED_TTL 은 자격증명 검증 결과를 신뢰하는 기간이다.
 	// OctoRepository 컨트롤러의 재검증 주기와 같은 값을 쓰므로, 이 주기당
 	// GitHub 프로브는 최대 1회만 발생한다.
-	credTTL := parseDurationOr(os.Getenv("GIT_CRED_TTL"), github.DefaultAccessTTL)
+	credTTL := controller.ParseDurationOr(os.Getenv("GIT_CRED_TTL"), github.DefaultAccessTTL)
 
 	orgChecker := github.NewAccessChecker(github.AccessOptions{
 		BaseURL:   gitBase,
@@ -332,27 +332,8 @@ func main() {
 		"credentialCheckTTL", credTTL)
 
 	region := os.Getenv("AWS_REGION")
-	AwsSMTtlStr := os.Getenv("AWS_SM_TTL")
-	if AwsSMTtlStr == "" {
-
-		AwsSMTtlStr = "1m"
-	}
-	AwsPSTtlStr := os.Getenv("AWS_PS_TTL")
-	if AwsPSTtlStr == "" {
-
-		AwsPSTtlStr = "1m"
-	}
-
-	AwsSMTtl, err := time.ParseDuration(AwsSMTtlStr)
-	if err != nil || AwsSMTtl <= 0 {
-
-		AwsSMTtl = time.Minute
-	}
-	AwsPSTtl, err := time.ParseDuration(AwsPSTtlStr)
-	if err != nil || AwsPSTtl <= 0 {
-
-		AwsPSTtl = time.Minute
-	}
+	AwsSMTtl := controller.ParseDurationOr(os.Getenv("AWS_SM_TTL"), time.Minute)
+	AwsPSTtl := controller.ParseDurationOr(os.Getenv("AWS_PS_TTL"), time.Minute)
 
 	awsSMProv, err := awssm.New(context.Background(), region, AwsSMTtl)
 	if err != nil {
@@ -500,23 +481,6 @@ func newTargetSecretCache(mgr ctrl.Manager) (cache.Cache, error) {
 	}
 
 	return c, nil
-}
-
-// parseDurationOr 빈 값이거나 파싱 실패면 기본값을 쓴다.
-func parseDurationOr(s string, def time.Duration) time.Duration {
-
-	s = strings.TrimSpace(s)
-	if s == "" {
-
-		return def
-	}
-
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-
-		return d
-	}
-
-	return def
 }
 
 // resolveWorkers: env(>0) flag(>0) > def
