@@ -265,7 +265,7 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	if targetNS != ov.Namespace {
-		r.updateStatusIfChanged(ctx, &ov, fail("InvalidTargetNamespace",
+		r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, "InvalidTargetNamespace",
 			fmt.Sprintf("targetNamespace %q must match OctoVault namespace %q: cross-namespace targets are not supported", targetNS, ov.Namespace)))
 		return ctrl.Result{RequeueAfter: poll}, nil
 	}
@@ -307,7 +307,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	if err := r.Get(ctx, types.NamespacedName{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo); err != nil {
 		if apierrors.IsNotFound(err) {
 
-			r.updateStatusIfChanged(ctx, ov, fail("OctoRepositoryNotFound", fmt.Sprintf("no OctoRepository %q", ov.Spec.OctoRepositoryRef.Name)))
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "OctoRepositoryNotFound", fmt.Sprintf("no OctoRepository %q", ov.Spec.OctoRepositoryRef.Name)))
 
 			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 		}
@@ -321,7 +321,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	if err := r.Get(ctx, secKey, &cred); err != nil {
 		if apierrors.IsNotFound(err) {
 
-			r.updateStatusIfChanged(ctx, ov, fail("CredentialsNotFound", fmt.Sprintf("no Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "CredentialsNotFound", fmt.Sprintf("no Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
 
 			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 		}
@@ -332,7 +332,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	token := getFromSecret(&cred, "password")
 	if token == "" {
 
-		r.updateStatusIfChanged(ctx, ov, fail("SecretMissingPassword", fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretMissingPassword", fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
 
 		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 	}
@@ -342,7 +342,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 		dec, err := base64.StdEncoding.DecodeString(token)
 		if err != nil {
 
-			r.updateStatusIfChanged(ctx, ov, fail("SecretInvalidPasswordEncoding", fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretInvalidPasswordEncoding", fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
 
 			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 		}
@@ -372,13 +372,13 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 			logger.Info("github rate limit hit while fetching values; backing off until reset",
 				"repository", repo, "path", ov.Spec.Path, "retryAfter", retryAfter)
 
-			r.updateStatusIfChanged(ctx, ov, fail("RateLimited", fmt.Sprintf("github rate limit: %v", err)))
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "RateLimited", fmt.Sprintf("github rate limit: %v", err)))
 
 			return nil, nil, "", ctrl.Result{RequeueAfter: retryAfter}
 		}
 
 		logger.Error(err, "failed to fetch values", "repository", repo, "path", ov.Spec.Path)
-		r.updateStatusIfChanged(ctx, ov, fail("FetchFailed", fmt.Sprintf("failed to fetch values: %v", err)))
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "FetchFailed", fmt.Sprintf("failed to fetch values: %v", err)))
 
 		return nil, nil, "", ctrl.Result{RequeueAfter: poll}
 	}
@@ -390,7 +390,7 @@ func (r *OctoVaultReconciler) tryValidate(ov *octovaultv1alpha1.OctoVault, value
 	if r.Validator != nil {
 		if err := r.Validator.Validate(valuesYAML, schemaJSON); err != nil {
 
-			r.updateStatusIfChanged(context.Background(), ov, fail("ValidateFailed", fmt.Sprintf("failed to validate values: %v", err)))
+			r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ValidateFailed", fmt.Sprintf("failed to validate values: %v", err)))
 
 			return ctrl.Result{RequeueAfter: poll}
 		}
@@ -404,7 +404,7 @@ func (r *OctoVaultReconciler) parseAndResolveType(ov *octovaultv1alpha1.OctoVaul
 	var doc valuesDoc
 	if err := yaml.Unmarshal(valuesYAML, &doc); err != nil {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail("ParseFailed", fmt.Sprintf("yaml parse failed: %v", err)))
+		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ParseFailed", fmt.Sprintf("yaml parse failed: %v", err)))
 
 		return doc, "", ctrl.Result{RequeueAfter: poll}
 	}
@@ -412,7 +412,7 @@ func (r *OctoVaultReconciler) parseAndResolveType(ov *octovaultv1alpha1.OctoVaul
 	resolvedType := strings.TrimSpace(doc.Metadata.Type)
 	if resolvedType == "" || (resolvedType != string(octovaultv1alpha1.OutputConfigMap) && resolvedType != string(octovaultv1alpha1.OutputSecret)) {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail("InvalidType", "metadata.type must be 'ConfigMap' or 'Secret'"))
+		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "InvalidType", "metadata.type must be 'ConfigMap' or 'Secret'"))
 
 		return doc, "", ctrl.Result{RequeueAfter: poll}
 	}
@@ -430,7 +430,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			k := strings.TrimSpace(it.Key)
 			if k == "" {
 
-				r.updateStatusIfChanged(ctx, ov, fail("InvalidData", "data.key must be non-empty"))
+				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData", "data.key must be non-empty"))
 				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 			data[k] = it.Value
@@ -442,11 +442,11 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
 
-				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
 				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 
-			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return "", ctrl.Result{}, err
 		}
 
@@ -459,7 +459,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			k := strings.TrimSpace(it.Key)
 			if k == "" {
 
-				r.updateStatusIfChanged(ctx, ov, fail("InvalidData", "data.key must be non-empty"))
+				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData", "data.key must be non-empty"))
 				return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("data.key must be non-empty")
 			}
 			switch strings.ToLower(strings.TrimSpace(it.Type)) {
@@ -469,7 +469,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 				if r.AwsSM == nil {
 
-					r.updateStatusIfChanged(ctx, ov, fail("AwsNotConfigured", "AwsSecretManager type requires controller to be configured with AWS provider"))
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AwsNotConfigured", "AwsSecretManager type requires controller to be configured with AWS provider"))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
@@ -477,7 +477,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				name := strings.TrimSpace(it.Name)
 				if name == "" {
 
-					r.updateStatusIfChanged(ctx, ov, fail("InvalidData",
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData",
 						fmt.Sprintf("Secret data item %q missing 'name' for AwsSecretManager", k)))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -489,7 +489,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					// 외부 소스 조회 실패는 poll 주기로 물러난다. err 를 반환하면 5ms 백오프로
 					// 재시도하면서 이번엔 AWS 쪽 throttling 을 유발한다.
 					// AwsParameterStore 경로와 동일하게 처리한다.
-					r.updateStatusIfChanged(ctx, ov, fail("AwsSecretFetchFailed",
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AwsSecretFetchFailed",
 						fmt.Sprintf("failed to fetch from AWS secret manager %q: %v", name, err2)))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -500,7 +500,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					val, err = r.AwsSM.ExtractJSONKey(val, jk)
 					if err != nil {
 
-						r.updateStatusIfChanged(ctx, ov, fail("AWSSecretJSONKeyError",
+						r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AWSSecretJSONKeyError",
 							fmt.Sprintf("aws secret %q jsonKey=%q: %v", name, jk, err)))
 
 						return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -520,7 +520,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			case "awsparameterstore", "parameterstore", "ssm":
 				if r.AwsPS == nil {
 
-					r.updateStatusIfChanged(ctx, ov, fail("ExternalSourceUnavailable",
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceUnavailable",
 						fmt.Sprintf("AwsParameterStore provider unavailable for %q", k)))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -528,7 +528,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				paramName := strings.TrimSpace(it.Name)
 				if paramName == "" {
 
-					r.updateStatusIfChanged(ctx, ov, fail("InvalidData",
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData",
 						fmt.Sprintf("Secret data item %q requires .name for AwsParameterStore", k)))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -537,7 +537,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, true)
 				if err2 != nil {
 
-					r.updateStatusIfChanged(ctx, ov, fail("ExternalSourceFetchFailed",
+					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceFetchFailed",
 						fmt.Sprintf("failed to fetch from AWS parameter store %q: %v", paramName, err2)))
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -548,7 +548,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					out, err := r.AwsPS.ExtractJSONKey(pv, jk)
 					if err != nil {
 
-						r.updateStatusIfChanged(ctx, ov, fail("ExternalJSONExtractFailed",
+						r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalJSONExtractFailed",
 							fmt.Sprintf("aws parameter %q jsonKey=%q: %v", paramName, jk, err)))
 
 						return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -561,7 +561,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 			default:
 
-				r.updateStatusIfChanged(ctx, ov, fail("UnsupportedDataType",
+				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "UnsupportedDataType",
 					fmt.Sprintf("unsupported data.type %q for key %q", it.Type, k)))
 
 				return "", ctrl.Result{RequeueAfter: poll}, nil
@@ -574,11 +574,11 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
 
-				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
 				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 
-			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed",
+			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
 
 			return "", ctrl.Result{}, err
@@ -866,12 +866,23 @@ func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *oct
 	}
 }
 
-func fail(reason, msg string) octovaultv1alpha1.OctoVaultStatus {
-	return octovaultv1alpha1.OctoVaultStatus{
-		Phase:      octovaultv1alpha1.OVPhaseFailed,
-		Message:    msg,
-		Conditions: upsertCond(nil, CondReady, metav1.ConditionFalse, reason, msg),
-	}
+// fail 직전 상태를 바탕으로 실패 상태를 만든다.
+//
+// ResolvedType, ObservedRevision, LastSyncedTime, ExternalRefs 는 마지막으로 성공한
+// 동기화의 기록이므로 실패해도 지우지 않는다. 특히 ResolvedType 이 지워지면
+// 삭제 시 orphanTargets 가 대상 종류를 알 수 없어 대상 리소스가 GC 로 함께 삭제된다.
+func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv1alpha1.OctoVaultStatus {
+
+	next := prev
+	next.Phase = octovaultv1alpha1.OVPhaseFailed
+	next.Message = msg
+
+	// upsertCond 는 슬라이스를 제자리에서 고치므로 복사본을 넘긴다. 그렇지 않으면
+	// prev 까지 바뀌어 updateStatusIfChanged 가 변경을 감지하지 못한다.
+	conds := append([]metav1.Condition(nil), prev.Conditions...)
+	next.Conditions = upsertCond(conds, CondReady, metav1.ConditionFalse, reason, msg)
+
+	return next
 }
 
 func upsertCond(conds []metav1.Condition, t string, s metav1.ConditionStatus, reason, msg string) []metav1.Condition {
