@@ -20,9 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	ghclient "github.com/octovault/octovault/internal/github"
@@ -82,7 +82,7 @@ var (
 	// pollInterval GIT_CRED_TTL 로 조정한다. Checker 의 캐시 TTL 과 같은 값을 쓴다.
 	pollInterval = func() time.Duration {
 
-		if v := strings.TrimSpace(env("GIT_CRED_TTL")); v != "" {
+		if v := strings.TrimSpace(os.Getenv("GIT_CRED_TTL")); v != "" {
 			if d, err := time.ParseDuration(v); err == nil && d > 0 {
 
 				return d
@@ -396,12 +396,4 @@ func statusEqual(a, b octovaultv1alpha1.OctoRepositoryStatus) bool {
 	}
 
 	return readyConditionEqual(a.Conditions, b.Conditions)
-}
-
-func env(k string) string {
-	if v, ok := syscall.Getenv(k); ok {
-
-		return v
-	}
-	return ""
 }
