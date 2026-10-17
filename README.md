@@ -27,7 +27,9 @@ It also supports external secret sources referenced from your Git-backed `values
     - validates and applies as a **ConfigMap** or **Secret**,
     - records status and emits Events.
 
-It keeps the target resource in sync on a timer (`spec.pollInterval`).
+It keeps the target resource in sync on a timer (`spec.pollInterval`), and also reacts right away when the
+target `ConfigMap`/`Secret` is deleted or edited by hand. If `metadata.type` switches between `ConfigMap` and
+`Secret`, the previous object (if this `OctoVault` controls it) is deleted.
 
 Polling is designed to stay well inside GitHub's PAT rate limit: each poll issues a
 single `contents` request, sent as a conditional request with `If-None-Match`. GitHub
