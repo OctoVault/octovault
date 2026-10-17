@@ -43,6 +43,14 @@ type OctoRepositorySpec struct {
 	// CredentialsRef is a reference to the Secret Object which stores credentials to GitHub repository.
 	// +kubebuilder:validation:Required
 	CredentialsRef NamespacedObjectRef `json:"credentialsRef"`
+
+	// AllowedNamespaces lists the namespaces whose OctoVaults may use this OctoRepository.
+	// The credentials can read every repository the token can, so restrict this in
+	// multi-tenant clusters. When empty, OctoVaults in any namespace may use it.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:items:MinLength=1
+	AllowedNamespaces []string `json:"allowedNamespaces,omitempty"`
 }
 
 // OctoRepositoryStatus defines the observed state of OctoRepository.

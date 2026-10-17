@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -325,6 +326,15 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 		}
 
 		return nil, "", ctrl.Result{}, err
+	}
+
+	// 자격증명 Secret 을 읽기 전에 막아야 한다. 허용되지 않은 네임스페이스가
+	// 다른 팀의 토큰으로 private repo 를 읽는 경로가 된다.
+	if !namespaceAllowed(&orepo, ov.Namespace) {
+
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "NamespaceNotAllowed", fmt.Sprintf("OctoRepository %q does not allow namespace %q", orepo.Name, ov.Namespace)))
+
+		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	var cred corev1.Secret
@@ -997,6 +1007,16 @@ func parseDurationOr(s string, d time.Duration) time.Duration {
 	}
 
 	return d
+}
+
+// namespaceAllowed AllowedNamespaces 가 비어 있으면 모든 네임스페이스를 허용한다.
+func namespaceAllowed(orepo *octovaultv1alpha1.OctoRepository, ns string) bool {
+	if len(orepo.Spec.AllowedNamespaces) == 0 {
+
+		return true
+	}
+
+	return slices.Contains(orepo.Spec.AllowedNamespaces, ns)
 }
 
 func normalizeRepoName(s string) string {
