@@ -384,6 +384,17 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 	logger := logf.FromContext(ctx)
 
 	org := orepo.Spec.Organization
+
+	// "owner/repo" 의 owner 가 OctoRepository 의 조직과 다르면 조용히 다른 조직에서
+	// 받아오게 된다. 사용자가 적은 저장소와 실제로 읽는 저장소가 같아야 한다.
+	if owner, ok := repositoryOwner(ov.Spec.Repository); ok && !strings.EqualFold(owner, strings.TrimPrefix(org, "github.com/")) {
+
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "RepositoryOwnerMismatch",
+			fmt.Sprintf("repository owner %q does not match OctoRepository organization %q", owner, org)))
+
+		return nil, nil, "", ctrl.Result{RequeueAfter: poll}
+	}
+
 	ref := strings.TrimSpace(ov.Spec.GitRef)
 	repo := normalizeRepoName(ov.Spec.Repository)
 	// ctx context.Context, org, repo, path, ref, token string
@@ -1021,6 +1032,18 @@ func namespaceAllowed(orepo *octovaultv1alpha1.OctoRepository, ns string) bool {
 	}
 
 	return slices.Contains(orepo.Spec.AllowedNamespaces, ns)
+}
+
+// repositoryOwner "owner/repo" 에서 owner 를 꺼낸다. owner 가 없으면 false.
+func repositoryOwner(repository string) (string, bool) {
+
+	owner, _, found := strings.Cut(strings.TrimSpace(repository), "/")
+	if !found || owner == "" {
+
+		return "", false
+	}
+
+	return owner, true
 }
 
 func normalizeRepoName(s string) string {
