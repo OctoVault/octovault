@@ -121,6 +121,8 @@ type OctoVaultStatus struct {
 	// +optional
 	ResolvedType string `json:"resolvedType,omitempty"` // ConfigMap | Secret
 
+	// ObservedRef 마지막 동기화에 쓴 git ref (spec.gitRef, 비었으면 GIT_REF).
+	// 둘 다 비어 있으면 저장소 기본 브랜치를 썼다는 뜻으로 비워 둔다.
 	// +optional
 	ObservedRef string `json:"observedRef,omitempty"`
 
@@ -138,7 +140,7 @@ type OctoVaultStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="OctoRepositoryRef",type=string,JSONPath=`.spec.octoRepositoryRef.name`
 // +kubebuilder:printcolumn:name="Repo",type=string,JSONPath=`.spec.repository`
-// +kubebuilder:printcolumn:name="Ref",type=string,JSONPath=`.spec.observedRef`
+// +kubebuilder:printcolumn:name="Ref",type=string,JSONPath=`.status.observedRef`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.status.resolvedType`
 // +kubebuilder:printcolumn:name="Target",type=string,JSONPath=`.spec.targetName`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`

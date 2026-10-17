@@ -172,6 +172,9 @@ type OctoVaultReconciler struct {
 
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
+
+	// DefaultRef spec.gitRef 가 비었을 때 Git 이 쓰는 ref(GIT_REF). status.observedRef 표시에만 쓴다.
+	DefaultRef string
 }
 
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults,verbs=get;list;watch;create;update;patch;delete
@@ -649,6 +652,7 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next.Phase = octovaultv1alpha1.OVPhaseSynced
 	next.Message = ""
 	next.ObservedRevision = rev
+	next.ObservedRef = r.effectiveRef(ov)
 	next.LastSyncedTime = &now
 	next.AppliedDataHash = appliedHash
 	next.ResolvedType = resolvedType
@@ -661,6 +665,16 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
 			"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
 	}
+}
+
+// effectiveRef 동기화에 쓴 ref. 둘 다 비어 있으면 저장소의 기본 브랜치를 뜻하는 빈 문자열이다.
+func (r *OctoVaultReconciler) effectiveRef(ov *octovaultv1alpha1.OctoVault) string {
+	if ref := strings.TrimSpace(ov.Spec.GitRef); ref != "" {
+
+		return ref
+	}
+
+	return strings.TrimSpace(r.DefaultRef)
 }
 
 func (r *OctoVaultReconciler) fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
@@ -983,7 +997,7 @@ func upsertCond(conds []metav1.Condition, t string, s metav1.ConditionStatus, re
 }
 
 func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
-	if a.Phase != b.Phase || a.Message != b.Message || a.ObservedRevision != b.ObservedRevision || a.AppliedDataHash != b.AppliedDataHash || a.ResolvedType != b.ResolvedType {
+	if a.Phase != b.Phase || a.Message != b.Message || a.ObservedRevision != b.ObservedRevision || a.ObservedRef != b.ObservedRef || a.AppliedDataHash != b.AppliedDataHash || a.ResolvedType != b.ResolvedType {
 
 		return false
 	}
