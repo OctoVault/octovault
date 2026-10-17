@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -575,7 +576,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
 				withDecryption := it.WithDecryption == nil || *it.WithDecryption
-				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, withDecryption)
+				pv, psMeta, err2 := r.AwsPS.GetParameter(ctx, paramName, withDecryption)
 				if err2 != nil {
 
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceFetchFailed",
@@ -599,6 +600,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				}
 
 				bytes[k] = pv
+
+				extRefs = append(extRefs, octovaultv1alpha1.ExternalRefStatus{
+					Provider:  "AwsParameterStore",
+					Name:      paramName,
+					VersionID: strconv.FormatInt(psMeta.Version, 10),
+					Key:       k,
+				})
 
 			default:
 
