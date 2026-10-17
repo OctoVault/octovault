@@ -329,6 +329,7 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets.
 - **AWS PS** via IRSA/web-identity. Grant `secretsmanager:GetParameter` for referenced values.
 - Operator writes into the target namespace and sets `ownerReferences` to the `OctoVault` for GC.
+- An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
 
 ---
 
