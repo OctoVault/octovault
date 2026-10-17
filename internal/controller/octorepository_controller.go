@@ -146,12 +146,13 @@ func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return res, nil
 	}
 
-	if res, done := r.checkAccessAndMaybeFail(ctx, &orepo, pwd); done {
+	access, res, done := r.checkAccessAndMaybeFail(ctx, &orepo, pwd)
+	if done {
 
 		return res, nil
 	}
 
-	return r.setSynced(ctx, &orepo, sec)
+	return r.setSynced(ctx, &orepo, syncedAccess{secretName: sec.Name, result: access})
 }
 
 // ---- Helpers (same file) ----------------------------------------------------
@@ -244,20 +245,20 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 	return pwd, ctrl.Result{}
 }
 
-func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository, pwd string) (ctrl.Result, bool) {
+func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository, pwd string) (ghclient.AccessResult, ctrl.Result, bool) {
 
 	logger := logf.FromContext(ctx)
 
 	if r.Checker == nil {
 
 		r.setFailed(ctx, o, "CheckerNotConfigured", "controller was started without an org access checker")
-		return ctrl.Result{RequeueAfter: pollInterval}, true
+		return ghclient.AccessResult{}, ctrl.Result{RequeueAfter: pollInterval}, true
 	}
 
-	err := r.Checker.Check(ctx, o.Spec.Organization, pwd)
+	access, err := r.Checker.CheckAccess(ctx, o.Spec.Organization, pwd)
 	if err == nil {
 
-		return ctrl.Result{}, false
+		return access, ctrl.Result{}, false
 	}
 
 	// rate limit 은 권한 문제가 아니다. 같은 이유로 계속 찔러봐야 한도만 더 소모하므로
@@ -269,30 +270,51 @@ func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, 
 
 		r.setFailed(ctx, o, "RateLimited", err.Error())
 
-		return ctrl.Result{RequeueAfter: retryAfter}, true
+		return access, ctrl.Result{RequeueAfter: retryAfter}, true
 	}
 
 	r.setFailed(ctx, o, "AccessDenied", err.Error())
 
-	return ctrl.Result{RequeueAfter: pollInterval}, true
+	return access, ctrl.Result{RequeueAfter: pollInterval}, true
 }
 
-func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (ctrl.Result, error) {
+// syncedAccess 검증에 성공했을 때 상태에 반영할 내용.
+type syncedAccess struct {
+	secretName string
+	result     ghclient.AccessResult
+}
+
+func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1alpha1.OctoRepository, access syncedAccess) (ctrl.Result, error) {
 
 	prev := o.Status
 	org := strings.TrimPrefix(strings.TrimSpace(o.Spec.Organization), "github.com/")
 	desired := prev
 	desired.Phase = octovaultv1alpha1.OctoRepoPhaseSynced
-	desired.Message = fmt.Sprintf("organization %q is accessible", org)
-	desired.Conditions = upsertReadyCondition(prev.Conditions, metav1.ConditionTrue, "Accessible", desired.Message)
+
+	// 프로브는 토큰이 유효하고 owner 가 보인다는 것까지만 확인한다. 개별 저장소 접근은
+	// 각 OctoVault 의 fetch 에서 드러나므로, 메시지가 그 이상을 약속하지 않게 한다.
+	reason := "Accessible"
+	desired.Message = fmt.Sprintf("organization %q is accessible (token is valid; repository access is checked by each OctoVault)", org)
+	if access.result.LimitedToPublic {
+
+		reason = "AccessibleLimitedToPublic"
+		desired.Message = fmt.Sprintf("organization %q is accessible, but the token lacks the \"repo\" scope: only public repositories can be read", org)
+	}
+
+	desired.Conditions = upsertReadyCondition(prev.Conditions, metav1.ConditionTrue, reason, desired.Message)
 
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
 		_ = r.Status().Update(ctx, o)
 
-		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Accessible", "organization %s is accessible; secret=%s", org, sec.Name)
-		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Synced", "organization %s is accessible; secret=%s", org, sec.Name)
+		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Accessible", "organization %s is accessible; secret=%s", org, access.secretName)
+		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Synced", "organization %s is accessible; secret=%s", org, access.secretName)
+
+		if access.result.LimitedToPublic {
+
+			r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", desired.Message)
+		}
 	}
 
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
