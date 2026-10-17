@@ -243,7 +243,7 @@ spec:
 
 ### Helm
 
-The chart (`charts/octovault-operator`) includes CRDs in its `crds/` folder; Helm will install them automatically (Helm ≥3.2).
+The chart (`charts/octovault`) includes CRDs in its `crds/` folder; Helm will install them automatically (Helm ≥3.2).
 
 ```
 helm upgrade --install --create-namespace --namespace=octovault-system \
@@ -253,8 +253,8 @@ helm upgrade --install --create-namespace --namespace=octovault-system \
 Common values:
 ```yaml
 image:
-  repository: ghcr.io/octovault/octovault
-  tag: v0.0.1
+  repository: ghcr.io/octovault/octovault-operator
+  tag: v0.0.3-rc2
 controller:
   probes:
     healthz: ":8081"
@@ -389,8 +389,10 @@ Repo layout:
     api/v1alpha1/                 # CRD Go types
     internal/controller/          # reconcilers
     internal/github/              # GitHub fetcher
-    internal/awssm/               # AWS Secrets Manager provider
-    charts/octovault-operator/    # Helm chart (includes CRDs)
+    internal/aws/secret_manager/  # AWS Secrets Manager provider
+    internal/aws/parameter_store/ # AWS SSM Parameter Store provider
+    internal/metrics/             # Prometheus metrics
+    charts/octovault/             # Helm chart (includes CRDs; `make helm-sync-crds` refreshes them)
 
 Make targets:
 
