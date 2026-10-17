@@ -30,6 +30,9 @@ import (
 	awssm "github.com/octovault/octovault/internal/aws/secret_manager"
 	"github.com/octovault/octovault/internal/github"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -209,6 +212,8 @@ func main() {
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "08f842b9.octovault.it",
+		Cache:                  secretCacheOptions(),
+		Client:                 secretClientOptions(),
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -413,6 +418,32 @@ func main() {
 
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// secretCacheOptions Secret informer 가 자격증명 라벨이 붙은 Secret 만 담도록 제한한다.
+//
+// 제한이 없으면 OctoRepository 의 Secret watch 때문에 클러스터의 모든 Secret 이
+// 컨트롤러 메모리에 올라간다. watch 가 실제로 반응하는 것은 라벨이 붙은 Secret 뿐이다.
+func secretCacheOptions() cache.Options {
+	return cache.Options{
+		ByObject: map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {
+				Label: labels.SelectorFromSet(labels.Set{controller.LabelRepo: controller.LabelRepoTrue}),
+			},
+		},
+	}
+}
+
+// secretClientOptions Secret 조회는 캐시를 거치지 않고 API 서버로 보낸다.
+//
+// 캐시가 라벨로 제한되므로, 라벨 없는 자격증명 Secret 이나 OctoVault 가 만든 대상 Secret 을
+// 캐시에서 읽으면 NotFound 가 된다.
+func secretClientOptions() client.Options {
+	return client.Options{
+		Cache: &client.CacheOptions{
+			DisableFor: []client.Object{&corev1.Secret{}},
+		},
 	}
 }
 
