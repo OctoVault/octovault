@@ -159,7 +159,7 @@ spec:
   gitRef: "release-2025-09"           # optional (branch/tag/SHA)
   targetName: "app-config"            # ConfigMap/Secret name
   targetNamespace: "demo"             # optional (defaults to this namespace)
-  pollInterval: "5m"                  # Go duration (default 5m)
+  pollInterval: "5m"                  # s/m/h duration, e.g. 90s, 5m, 1h30m (default 5m, minimum 30s)
 ```
 Status (abbrev.):
 ```yaml
@@ -179,6 +179,9 @@ status:
       message: "values applied"
 ```
 ### `values.yaml` format
+
+`values.yaml` must be under 1MB: GitHub's contents API does not return larger files inline, and the resulting
+`ConfigMap`/`Secret` is limited to 1MiB anyway.
 
 #### ConfigMap
 ```yaml
