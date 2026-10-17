@@ -192,7 +192,7 @@ type OctoVaultReconciler struct {
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/finalizers,verbs=update
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -326,7 +326,18 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
-	// 5) status
+	// 5) metadata.type 이 바뀌었으면 이전 종류의 대상을 정리한다. 실패하면 ResolvedType 을
+	// 갱신하지 않아야 다음 poll 에서 다시 시도한다.
+	if prev := ov.Status.ResolvedType; prev != "" && prev != resolvedType {
+		if err := r.deleteStaleTarget(ctx, &ov, prev); err != nil {
+
+			r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, "StaleTargetCleanupFailed",
+				fmt.Sprintf("applied %s but failed to delete previous %s %s/%s: %v", resolvedType, prev, targetNS, ov.Spec.TargetName, err)))
+			return ctrl.Result{RequeueAfter: poll}, nil
+		}
+	}
+
+	// 6) status
 	r.setSyncedStatus(ctx, &ov, applied)
 
 	return ctrl.Result{RequeueAfter: poll}, nil
@@ -853,6 +864,37 @@ func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopt
 	obj.OwnerReferences = append(obj.OwnerReferences, *metav1.NewControllerRef(ov, ov.GroupVersionKind()))
 
 	return true, true
+}
+
+// deleteStaleTarget 이전 종류(kind)의 대상을 지운다. 이 OctoVault 가 소유한 것만 지운다.
+func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovaultv1alpha1.OctoVault, kind string) error {
+
+	var obj client.Object
+	switch kind {
+	case string(octovaultv1alpha1.OutputConfigMap):
+		obj = &corev1.ConfigMap{}
+	case string(octovaultv1alpha1.OutputSecret):
+		obj = &corev1.Secret{}
+	default:
+		return nil
+	}
+
+	key := types.NamespacedName{Namespace: ov.Namespace, Name: ov.Spec.TargetName}
+	if err := r.Get(ctx, key, obj); err != nil {
+
+		return client.IgnoreNotFound(err)
+	}
+
+	if !metav1.IsControlledBy(obj, ov) {
+
+		return nil
+	}
+
+	// 조회와 삭제 사이에 같은 이름으로 다시 만들어진 객체를 지우지 않도록 UID 를 고정한다.
+	uid := obj.GetUID()
+	err := r.Delete(ctx, obj, client.Preconditions{UID: &uid})
+
+	return client.IgnoreNotFound(err)
 }
 
 func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1alpha1.OctoVault) error {
