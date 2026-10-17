@@ -262,8 +262,9 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
+	// revision 은 라벨 값으로도 쓰이므로 라벨에 허용되지 않는 ':' 를 쓰지 않는다.
 	if rev == "" {
-		rev = "sha256:" + shortSHA(valuesYAML)
+		rev = "sha256-" + shortSHA(valuesYAML)
 	}
 
 	if res := r.tryValidate(&ov, valuesYAML, schemaJSON, poll); res.RequeueAfter > 0 {
