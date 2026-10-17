@@ -501,7 +501,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if k == "" {
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData", "data.key must be non-empty"))
-				return "", ctrl.Result{RequeueAfter: poll}, fmt.Errorf("data.key must be non-empty")
+				return "", ctrl.Result{RequeueAfter: poll}, nil
 			}
 			switch strings.ToLower(strings.TrimSpace(it.Type)) {
 			case "", "text":
