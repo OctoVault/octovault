@@ -207,13 +207,6 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 		return nil, ctrl.Result{}, err
 	}
 
-	// track syncedSecretName
-	if o.Status.SyncedSecretName != sec.Name {
-
-		o.Status.SyncedSecretName = sec.Name
-		_ = r.Status().Update(ctx, o)
-	}
-
 	return &sec, ctrl.Result{}, nil
 }
 
@@ -284,6 +277,10 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	org := strings.TrimPrefix(strings.TrimSpace(o.Spec.Organization), "github.com/")
 	desired := prev
 	desired.Phase = octovaultv1alpha1.OctoRepoPhaseSynced
+
+	// 검증에 성공한 Secret 이름은 여기서 함께 기록한다. 따로 쓰면 reconcile 마다
+	// 상태를 두 번 갱신하고 그 사이 충돌 가능성도 생긴다.
+	desired.SyncedSecretName = access.secretName
 
 	// 프로브는 토큰이 유효하고 owner 가 보인다는 것까지만 확인한다. 개별 저장소 접근은
 	// 각 OctoVault 의 fetch 에서 드러나므로, 메시지가 그 이상을 약속하지 않게 한다.
