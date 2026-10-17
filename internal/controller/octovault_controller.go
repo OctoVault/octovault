@@ -1160,11 +1160,6 @@ func getFromSecret(s *corev1.Secret, key string) string {
 		}
 	}
 
-	if v := s.Annotations["octovault.it/"+key]; v != "" {
-
-		return v
-	}
-
 	return ""
 }
 
