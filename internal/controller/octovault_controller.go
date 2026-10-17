@@ -963,37 +963,9 @@ func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv
 	next.Phase = octovaultv1alpha1.OVPhaseFailed
 	next.Message = msg
 
-	// upsertCond 는 슬라이스를 제자리에서 고치므로 복사본을 넘긴다. 그렇지 않으면
-	// prev 까지 바뀌어 updateStatusIfChanged 가 변경을 감지하지 못한다.
-	conds := append([]metav1.Condition(nil), prev.Conditions...)
-	next.Conditions = upsertCond(conds, CondReady, metav1.ConditionFalse, reason, msg)
+	next.Conditions = upsertReadyCondition(prev.Conditions, metav1.ConditionFalse, reason, msg)
 
 	return next
-}
-
-func upsertCond(conds []metav1.Condition, t string, s metav1.ConditionStatus, reason, msg string) []metav1.Condition {
-	now := metav1.Now()
-	for i := range conds {
-		if conds[i].Type == t {
-			if conds[i].Status != s || conds[i].Reason != reason || conds[i].Message != msg {
-
-				conds[i].Status = s
-				conds[i].Reason = reason
-				conds[i].Message = msg
-				conds[i].LastTransitionTime = now
-			}
-
-			return conds
-		}
-	}
-
-	return append(conds, metav1.Condition{
-		Type:               t,
-		Status:             s,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: now,
-	})
 }
 
 func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
@@ -1002,36 +974,7 @@ func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 		return false
 	}
 
-	var ar, br *metav1.Condition
-	for i := range a.Conditions {
-		if a.Conditions[i].Type == CondReady {
-
-			ar = &a.Conditions[i]
-			break
-		}
-	}
-
-	for i := range b.Conditions {
-		if b.Conditions[i].Type == CondReady {
-
-			br = &b.Conditions[i]
-			break
-		}
-	}
-
-	if (ar == nil) != (br == nil) {
-
-		return false
-	}
-
-	if ar != nil && br != nil {
-		if ar.Status != br.Status || ar.Reason != br.Reason || ar.Message != br.Message {
-
-			return false
-		}
-	}
-
-	return true
+	return readyConditionEqual(a.Conditions, b.Conditions)
 }
 
 func parseDurationOr(s string, d time.Duration) time.Duration {

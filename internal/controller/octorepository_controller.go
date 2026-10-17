@@ -389,69 +389,13 @@ func (r *OctoRepositoryReconciler) maxWorkers() int {
 	return 1
 }
 
-func upsertReadyCondition(conds []metav1.Condition, status metav1.ConditionStatus, reason, msg string) []metav1.Condition {
-
-	now := metav1.Now()
-	for i := range conds {
-		if conds[i].Type == CondReady {
-			// 값이 달라질 때만 transition 갱신
-			if conds[i].Status != status || conds[i].Reason != reason || conds[i].Message != msg {
-
-				conds[i].Status = status
-				conds[i].Reason = reason
-				conds[i].Message = msg
-				conds[i].LastTransitionTime = now
-			}
-
-			return conds
-		}
-	}
-
-	return append(conds, metav1.Condition{
-		Type:               "Ready",
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: now,
-	})
-}
-
 func statusEqual(a, b octovaultv1alpha1.OctoRepositoryStatus) bool {
-
 	if a.Phase != b.Phase || a.Message != b.Message || a.SyncedSecretName != b.SyncedSecretName {
 
 		return false
 	}
 
-	var ar, br *metav1.Condition
-	for i := range a.Conditions {
-		if a.Conditions[i].Type == "Ready" {
-
-			ar = &a.Conditions[i]
-			break
-		}
-	}
-
-	for i := range b.Conditions {
-		if b.Conditions[i].Type == "Ready" {
-
-			br = &b.Conditions[i]
-			break
-		}
-	}
-
-	if (ar == nil) != (br == nil) {
-
-		return false
-	}
-	if ar != nil && br != nil {
-		if ar.Status != br.Status || ar.Reason != br.Reason || ar.Message != br.Message {
-
-			return false
-		}
-	}
-
-	return true
+	return readyConditionEqual(a.Conditions, b.Conditions)
 }
 
 func env(k string) string {
