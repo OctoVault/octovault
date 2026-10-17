@@ -267,16 +267,18 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		rev = "sha256-" + shortSHA(valuesYAML)
 	}
 
-	if res := r.tryValidate(&ov, valuesYAML, schemaJSON, poll); res.RequeueAfter > 0 {
+	if f := r.validate(valuesYAML, schemaJSON); f != nil {
 
-		return res, nil
+		r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, f.reason, f.msg))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	// 3) parse values.yaml
-	doc, resolvedType, res := r.parseAndResolveType(&ov, valuesYAML, poll)
-	if res.RequeueAfter > 0 {
+	doc, resolvedType, f := parseValues(valuesYAML)
+	if f != nil {
 
-		return res, nil
+		r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, f.reason, f.msg))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	r.warnReservedKeys(ctx, &ov, doc)
@@ -425,38 +427,41 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 	return valuesYAML, schemaJSON, rev, ctrl.Result{}
 }
 
-func (r *OctoVaultReconciler) tryValidate(ov *octovaultv1alpha1.OctoVault, valuesYAML, schemaJSON []byte, poll time.Duration) ctrl.Result {
-	if r.Validator != nil {
-		if err := r.Validator.Validate(valuesYAML, schemaJSON); err != nil {
-
-			r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ValidateFailed", fmt.Sprintf("failed to validate values: %v", err)))
-
-			return ctrl.Result{RequeueAfter: poll}
-		}
-	}
-
-	return ctrl.Result{}
+// syncFailure 상태에 기록할 실패. 호출자가 reconcile 의 ctx 로 기록한다.
+type syncFailure struct {
+	reason string
+	msg    string
 }
 
-func (r *OctoVaultReconciler) parseAndResolveType(ov *octovaultv1alpha1.OctoVault, valuesYAML []byte, poll time.Duration) (valuesDoc, string, ctrl.Result) {
+func (r *OctoVaultReconciler) validate(valuesYAML, schemaJSON []byte) *syncFailure {
+	if r.Validator == nil {
+
+		return nil
+	}
+
+	if err := r.Validator.Validate(valuesYAML, schemaJSON); err != nil {
+
+		return &syncFailure{reason: "ValidateFailed", msg: fmt.Sprintf("failed to validate values: %v", err)}
+	}
+
+	return nil
+}
+
+func parseValues(valuesYAML []byte) (valuesDoc, string, *syncFailure) {
 
 	var doc valuesDoc
 	if err := yaml.Unmarshal(valuesYAML, &doc); err != nil {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ParseFailed", fmt.Sprintf("yaml parse failed: %v", err)))
-
-		return doc, "", ctrl.Result{RequeueAfter: poll}
+		return doc, "", &syncFailure{reason: "ParseFailed", msg: fmt.Sprintf("yaml parse failed: %v", err)}
 	}
 
 	resolvedType := strings.TrimSpace(doc.Metadata.Type)
-	if resolvedType == "" || (resolvedType != string(octovaultv1alpha1.OutputConfigMap) && resolvedType != string(octovaultv1alpha1.OutputSecret)) {
+	if resolvedType != string(octovaultv1alpha1.OutputConfigMap) && resolvedType != string(octovaultv1alpha1.OutputSecret) {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "InvalidType", "metadata.type must be 'ConfigMap' or 'Secret'"))
-
-		return doc, "", ctrl.Result{RequeueAfter: poll}
+		return doc, "", &syncFailure{reason: "InvalidType", msg: "metadata.type must be 'ConfigMap' or 'Secret'"}
 	}
 
-	return doc, resolvedType, ctrl.Result{}
+	return doc, resolvedType, nil
 }
 
 func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1alpha1.OctoVault, doc valuesDoc, poll time.Duration, resolvedType, rev, targetNS string) (string, ctrl.Result, error) {
