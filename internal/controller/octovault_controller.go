@@ -123,6 +123,10 @@ type valuesDoc struct {
 			Type    string `yaml:"type,omitempty"`    // "Text" | "AwsSecretManager"
 			Name    string `yaml:"name,omitempty"`    // SecretManager일 때 참조
 			JSONKey string `yaml:"jsonKey,omitempty"` // SecretManager의 SecretString(JSON) 키
+
+			// WithDecryption AwsParameterStore 의 복호화 여부. 생략하면 true 로 본다
+			// (이전 버전은 항상 복호화했으므로 기존 values.yaml 의 동작을 바꾸지 않는다).
+			WithDecryption *bool `yaml:"withDecryption,omitempty"`
 		} `yaml:"data"`
 	} `yaml:"spec"`
 }
@@ -555,8 +559,8 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
-				// SecureString 가능성이 있으므로 복호화 활성화
-				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, true)
+				withDecryption := it.WithDecryption == nil || *it.WithDecryption
+				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, withDecryption)
 				if err2 != nil {
 
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceFetchFailed",
