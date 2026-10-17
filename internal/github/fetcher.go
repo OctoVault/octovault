@@ -216,6 +216,13 @@ func (f *Fetcher) fetchContentBase64(ctx context.Context, cr contentRequest) ([]
 		return nil, "", err
 	}
 
+	// 1MB 를 넘는 파일은 contents API 가 내용 없이 encoding "none" 으로 돌려준다.
+	// ConfigMap/Secret 자체가 1MiB 를 넘을 수 없으므로 다른 API 로 받아올 이유가 없다.
+	if strings.EqualFold(strings.TrimSpace(c.Encoding), "none") || (c.Content == "" && c.Size > 0) {
+
+		return nil, "", fmt.Errorf("file is %d bytes: GitHub's contents API does not return files over 1MB inline, and a ConfigMap or Secret cannot exceed 1MiB", c.Size)
+	}
+
 	if strings.ToLower(strings.TrimSpace(c.Encoding)) != "base64" {
 
 		return nil, "", fmt.Errorf("unsupported encoding %q", c.Encoding)

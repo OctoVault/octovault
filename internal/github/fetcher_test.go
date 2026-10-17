@@ -313,3 +313,30 @@ func TestFetcher_fetchContentBase64_UnsupportedEncoding(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported encoding")
 }
+
+// 1MB 를 넘는 파일은 내용 없이 encoding "none" 으로 온다. 원인을 알 수 있는 에러여야 한다.
+func TestFetcher_fetchContentBase64_TooLarge(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
+	f := NewFetcher(Options{HTTPClient: client})
+
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		return jsonResp(http.StatusOK, contentResp{
+			Encoding: "none",
+			Content:  "",
+			Size:     2 << 20,
+			SHA:      "x",
+		}), nil
+	}
+
+	_, _, err := f.fetchContentBase64(ctx, contentRequest{
+		url:   "https://api.github.com/whatever",
+		token: "tok",
+		kind:  "contents",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "file is 2097152 bytes")
+	require.Contains(t, err.Error(), "1MB")
+}
