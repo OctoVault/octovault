@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -121,6 +122,10 @@ type valuesDoc struct {
 		} `yaml:"data"`
 	} `yaml:"spec"`
 }
+
+// errTargetNotOwned 같은 이름의 ConfigMap/Secret 이 이미 있지만 이 OctoVault 가 소유하지 않은 경우.
+// 덮어쓰면 OctoVault 생성 권한만으로 컨트롤러 권한을 빌려 남의 리소스를 바꿀 수 있게 된다.
+var errTargetNotOwned = errors.New("target exists and is not controlled by this OctoVault")
 
 type GitFetcher interface {
 	// Fetch fetches values.yaml from the given GitHub repository.
@@ -422,6 +427,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		appliedHash = sha256OfStringMap(data)
 
 		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
+			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
+			if errors.Is(err, errTargetNotOwned) {
+
+				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				return "", ctrl.Result{RequeueAfter: poll}, nil
+			}
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return "", ctrl.Result{}, err
@@ -547,6 +559,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 		appliedHash = sha256OfBytesMap(bytes)
 		if err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, bytes, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
+			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
+			if errors.Is(err, errTargetNotOwned) {
+
+				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				return "", ctrl.Result{RequeueAfter: poll}, nil
+			}
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
@@ -629,6 +648,11 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return err
 	}
 
+	if !metav1.IsControlledBy(&cm, ov) {
+
+		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
+	}
+
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
@@ -676,6 +700,11 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	} else if err != nil {
 
 		return err
+	}
+
+	if !metav1.IsControlledBy(&sec, ov) {
+
+		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
 	}
 
 	desiredLabels := mergeLabels(sysLabels, userLabels)
