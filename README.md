@@ -100,7 +100,12 @@ spec:
   credentialsRef:
     namespace: octovault-system
     name: my-org-credentials
+  allowedNamespaces:                 # optional; empty = any namespace
+    - team-a
+    - team-b
 ```
+`allowedNamespaces` limits which namespaces' `OctoVault`s may use this `OctoRepository`. The token can read every repository it has access to, so set this in multi-tenant clusters. An `OctoVault` in an unlisted namespace fails with reason `NamespaceNotAllowed`.
+
 Credentials `Secret`:
 ```yaml
 apiVersion: v1
