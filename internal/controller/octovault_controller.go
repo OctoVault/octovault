@@ -36,11 +36,13 @@ import (
 	ghclient "github.com/octovault/octovault/internal/github"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"sigs.k8s.io/yaml"
 
@@ -176,6 +178,11 @@ type OctoVaultReconciler struct {
 
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
+
+	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
+	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
+	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
+	TargetSecrets cache.Cache
 
 	// DefaultRef spec.gitRef 가 비었을 때 Git 이 쓰는 ref(GIT_REF). status.observedRef 표시에만 쓴다.
 	DefaultRef string
@@ -1176,6 +1183,20 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// 전체 fan-out -> 요청 폭증 -> 한도 더 초과 로 이어지는 양성 피드백 루프가 된다.
 	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV,
 		builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+
+	// 대상이 지워지거나 손으로 바뀌면 poll 주기를 기다리지 않고 바로 되돌린다.
+	// 컨트롤러 자신의 갱신도 이벤트가 되지만, 다음 reconcile 에서 바뀐 것이 없어 끝난다.
+	b = b.Owns(&corev1.ConfigMap{})
+
+	if r.TargetSecrets != nil {
+
+		secretMeta := &metav1.PartialObjectMetadata{}
+		secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+
+		b = b.WatchesRawSource(source.Kind(r.TargetSecrets, secretMeta,
+			handler.TypedEnqueueRequestForOwner[*metav1.PartialObjectMetadata](
+				mgr.GetScheme(), mgr.GetRESTMapper(), &octovaultv1alpha1.OctoVault{}, handler.OnlyControllerOwner())))
+	}
 
 	return b.Complete(r)
 }

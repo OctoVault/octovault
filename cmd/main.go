@@ -368,6 +368,13 @@ func main() {
 		awsPSProv = nil
 	}
 
+	targetSecrets, err := newTargetSecretCache(mgr)
+	if err != nil {
+
+		setupLog.Error(err, "unable to create target Secret cache")
+		os.Exit(1)
+	}
+
 	if err := (&controller.OctoVaultReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -381,6 +388,8 @@ func main() {
 		DefaultRef: gitRef,
 
 		SecretCache: mgr.GetCache(),
+
+		TargetSecrets: targetSecrets,
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoVault")
@@ -466,6 +475,31 @@ func secretClientOptions() client.Options {
 			DisableFor: []client.Object{&corev1.Secret{}},
 		},
 	}
+}
+
+// newTargetSecretCache OctoVault 가 만든 Secret 의 메타데이터만 담는 캐시를 만들어 manager 에 붙인다.
+//
+// 기본 Secret 캐시는 자격증명 라벨로 제한돼 있어 대상 Secret 을 볼 수 없다. 라벨 셀렉터는
+// OR 를 지원하지 않으므로 managed-by 라벨로 제한한 캐시를 따로 둔다. 메타데이터만 쓰므로
+// Secret 데이터는 메모리에 올라가지 않는다.
+func newTargetSecretCache(mgr ctrl.Manager) (cache.Cache, error) {
+
+	c, err := cache.New(mgr.GetConfig(), cache.Options{
+		Scheme:               mgr.GetScheme(),
+		Mapper:               mgr.GetRESTMapper(),
+		DefaultLabelSelector: labels.SelectorFromSet(labels.Set{controller.LabelManagedBy: "octovault"}),
+	})
+	if err != nil {
+
+		return nil, err
+	}
+
+	if err := mgr.Add(c); err != nil {
+
+		return nil, err
+	}
+
+	return c, nil
 }
 
 // parseDurationOr 빈 값이거나 파싱 실패면 기본값을 쓴다.
