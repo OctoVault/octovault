@@ -339,6 +339,8 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
         - public repos only → PAT optional,
         - private repo read → `repo`,
         - sometimes `read:org` as org policy requires.
+    - The `OctoRepository` check confirms the token is valid and the owner is visible; access to each repository shows up in the `OctoVault` that fetches from it. A classic PAT without the `repo` scope is reported with reason `AccessibleLimitedToPublic` and a Warning event, since it can only read public repositories.
+    - The token is read from the Secret's `data.password` only (annotations are not accepted).
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
 - **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
 - Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
