@@ -51,8 +51,16 @@ type AccessChecker struct {
 	now         func() time.Time
 }
 
+// AccessResult 검증 성공 시 함께 알 수 있는 정보.
+type AccessResult struct {
+	// LimitedToPublic 클래식 PAT 의 X-OAuth-Scopes 에 "repo" 가 없어 public 저장소만 읽을 수 있다.
+	// fine-grained PAT 나 GitHub App 토큰은 이 헤더를 보내지 않으므로 항상 false 다.
+	LimitedToPublic bool
+}
+
 type accessEntry struct {
 	err       error
+	result    AccessResult
 	expiresAt time.Time
 
 	// preferUser 이 owner 가 조직이 아니라 개인 계정으로 확인된 경우 true.
@@ -109,13 +117,21 @@ func NewAccessChecker(opts AccessOptions) *AccessChecker {
 	}
 }
 
-// Check controller.OrgAccessChecker 를 만족한다.
+// Check 접근 가능 여부만 필요한 호출자를 위한 래퍼.
 func (a *AccessChecker) Check(ctx context.Context, org, token string) error {
+
+	_, err := a.CheckAccess(ctx, org, token)
+
+	return err
+}
+
+// CheckAccess controller.OrgAccessChecker 를 만족한다.
+func (a *AccessChecker) CheckAccess(ctx context.Context, org, token string) (AccessResult, error) {
 
 	owner := strings.TrimPrefix(strings.TrimSpace(org), "github.com/")
 	if owner == "" {
 
-		return fmt.Errorf("invalid owner: expected 'github.com/<owner>', got %q", org)
+		return AccessResult{}, fmt.Errorf("invalid owner: expected 'github.com/<owner>', got %q", org)
 	}
 
 	key := credentialScopedKey(owner, token)
@@ -126,24 +142,26 @@ func (a *AccessChecker) Check(ctx context.Context, org, token string) error {
 
 		ovmetrics.CredentialCheckCacheTotal.WithLabelValues("hit").Inc()
 
-		return prev.err
+		return prev.result, prev.err
 	}
 
 	ovmetrics.CredentialCheckCacheTotal.WithLabelValues("miss").Inc()
 
-	resolvedPreferUser, err := a.probe(ctx, probeTarget{
+	outcome, err := a.probe(ctx, probeTarget{
 		owner:      owner,
 		token:      token,
 		preferUser: hadPrev && prev.preferUser,
 	})
 
+	result := AccessResult{LimitedToPublic: outcome.limitedToPublic}
 	a.cache.put(key, accessEntry{
 		err:        err,
+		result:     result,
 		expiresAt:  now.Add(a.cacheTTLFor(err)),
-		preferUser: resolvedPreferUser,
+		preferUser: outcome.preferUser,
 	})
 
-	return err
+	return result, err
 }
 
 type probeTarget struct {
@@ -152,8 +170,13 @@ type probeTarget struct {
 	preferUser bool
 }
 
-// probe 접근 가능 여부를 실제로 확인한다. 첫 번째 반환값은 개인 계정으로 판별됐는지 여부.
-func (a *AccessChecker) probe(ctx context.Context, target probeTarget) (bool, error) {
+type probeOutcome struct {
+	preferUser      bool // owner 가 개인 계정으로 판별됨
+	limitedToPublic bool
+}
+
+// probe 접근 가능 여부를 실제로 확인한다.
+func (a *AccessChecker) probe(ctx context.Context, target probeTarget) (probeOutcome, error) {
 
 	orgProbe := probeSpec{
 		url:     fmt.Sprintf("%s/orgs/%s/repos?per_page=1", a.baseURL, target.owner),
@@ -171,32 +194,32 @@ func (a *AccessChecker) probe(ctx context.Context, target probeTarget) (bool, er
 	}
 
 	if target.preferUser {
-		if err := a.probeList(ctx, userProbe); err == nil {
+		if limited, err := a.probeList(ctx, userProbe); err == nil {
 
-			return true, nil
+			return probeOutcome{preferUser: true, limitedToPublic: limited}, nil
 		}
 	}
 
-	orgErr := a.probeList(ctx, orgProbe)
+	limited, orgErr := a.probeList(ctx, orgProbe)
 	if orgErr == nil {
 
-		return false, nil
+		return probeOutcome{limitedToPublic: limited}, nil
 	}
 
 	// rate limit 이면 개인 계정 폴백을 시도하지 않는다. 어차피 같은 이유로 거절되고
 	// 한도만 더 소모한다.
-	if _, limited := AsRateLimitError(orgErr); limited {
+	if _, rateLimited := AsRateLimitError(orgErr); rateLimited {
 
-		return target.preferUser, orgErr
+		return probeOutcome{preferUser: target.preferUser}, orgErr
 	}
 
-	userErr := a.probeList(ctx, userProbe)
+	limited, userErr := a.probeList(ctx, userProbe)
 	if userErr == nil {
 
-		return true, nil
+		return probeOutcome{preferUser: true, limitedToPublic: limited}, nil
 	}
 
-	return target.preferUser, fmt.Errorf("org probe failed: %v; user probe failed: %v", orgErr, userErr)
+	return probeOutcome{preferUser: target.preferUser}, fmt.Errorf("org probe failed: %v; user probe failed: %v", orgErr, userErr)
 }
 
 // cacheTTLFor rate limit 이면 리셋 시점까지 캐시해 재시도를 막는다.
@@ -222,7 +245,8 @@ type probeSpec struct {
 	token   string
 }
 
-func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) error {
+// probeList 성공하면 토큰이 public 저장소로 제한되는지 함께 반환한다.
+func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) (bool, error) {
 
 	cctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
@@ -230,7 +254,7 @@ func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) error {
 	req, err := http.NewRequestWithContext(cctx, http.MethodGet, spec.url, nil)
 	if err != nil {
 
-		return err
+		return false, err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+spec.token)
@@ -240,7 +264,7 @@ func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) error {
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
 
-		return err
+		return false, err
 	}
 	defer func() {
 		// 커넥션 재사용을 위해 바디를 드레인한다.
@@ -252,25 +276,43 @@ func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) error {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return nil
+		return limitedToPublic(resp.Header), nil
 
 	case http.StatusUnauthorized:
-		return errors.New("401 unauthorized: invalid token or scope")
+		return false, errors.New("401 unauthorized: invalid token or scope")
 
 	case http.StatusForbidden, http.StatusTooManyRequests:
 		peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 
 		if rle, limited := rateLimitErrorFrom(spec.kind, resp, peek, a.now()); limited {
 
-			return rle
+			return false, rle
 		}
 
-		return errors.New("403 forbidden: token lacks access to the resource")
+		return false, errors.New("403 forbidden: token lacks access to the resource")
 
 	case http.StatusNotFound:
-		return fmt.Errorf("404 not found: no access to the %s %q or it does not exist", spec.subject, spec.owner)
+		return false, fmt.Errorf("404 not found: no access to the %s %q or it does not exist", spec.subject, spec.owner)
 
 	default:
-		return fmt.Errorf("%d unexpected: cannot verify %s %q", resp.StatusCode, spec.subject, spec.owner)
+		return false, fmt.Errorf("%d unexpected: cannot verify %s %q", resp.StatusCode, spec.subject, spec.owner)
 	}
+}
+
+// limitedToPublic 클래식 PAT/OAuth 토큰은 X-OAuth-Scopes 로 스코프를 알려준다.
+// 헤더가 있는데 "repo" 가 없으면 private 저장소를 읽을 수 없다. 헤더가 없으면 판단하지 않는다.
+func limitedToPublic(h http.Header) bool {
+	if len(h.Values("X-OAuth-Scopes")) == 0 {
+
+		return false
+	}
+
+	for _, scope := range strings.Split(h.Get("X-OAuth-Scopes"), ",") {
+		if strings.TrimSpace(scope) == "repo" {
+
+			return false
+		}
+	}
+
+	return true
 }
