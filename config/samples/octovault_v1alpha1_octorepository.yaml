@@ -6,6 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: octorepository-sample
 spec:
-  organization: github.com/catze-labs
+  organization: github.com/octovault
   credentialsRef:
     name: octorepository-sample-credentials
+    namespace: devops
