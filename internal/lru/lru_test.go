@@ -38,3 +38,12 @@ func TestLRU_DropIf(t *testing.T) {
 
 	require.False(t, c.DropIf("missing", func(int) bool { return true }))
 }
+
+func TestLRU_PutReportsEvictions(t *testing.T) {
+
+	c := New[int](2)
+	require.Equal(t, 0, c.Put("a", 1))
+	require.Equal(t, 0, c.Put("b", 2))
+	require.Equal(t, 0, c.Put("a", 3), "updating an existing key evicts nothing")
+	require.Equal(t, 1, c.Put("c", 4))
+}

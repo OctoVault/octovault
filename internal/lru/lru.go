@@ -58,10 +58,11 @@ func (c *Cache[V]) Get(key string) (V, bool) {
 	return el.Value.(*record[V]).value, true
 }
 
-func (c *Cache[V]) Put(key string, value V) {
+// Put 값을 넣는다. 크기를 넘어 밀려난 항목 수를 반환한다(호출자가 지표로 쓸 수 있다).
+func (c *Cache[V]) Put(key string, value V) int {
 	if c == nil {
 
-		return
+		return 0
 	}
 
 	c.mu.Lock()
@@ -72,11 +73,12 @@ func (c *Cache[V]) Put(key string, value V) {
 		el.Value.(*record[V]).value = value
 		c.order.MoveToFront(el)
 
-		return
+		return 0
 	}
 
 	c.entries[key] = c.order.PushFront(&record[V]{key: key, value: value})
 
+	evicted := 0
 	for c.order.Len() > c.max {
 
 		oldest := c.order.Back()
@@ -87,7 +89,10 @@ func (c *Cache[V]) Put(key string, value V) {
 
 		c.order.Remove(oldest)
 		delete(c.entries, oldest.Value.(*record[V]).key)
+		evicted++
 	}
+
+	return evicted
 }
 
 func (c *Cache[V]) Drop(key string) {
