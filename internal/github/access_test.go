@@ -235,7 +235,7 @@ func TestAccessChecker_ReportsPublicOnlyScope(t *testing.T) {
 	}{
 		{name: "repo scope", scopes: []string{"read:org, repo"}, limited: false},
 		{name: "public_repo only", scopes: []string{"public_repo, read:org"}, limited: true},
-		{name: "no scopes", scopes: []string{""}, limited: true},
+		{name: "empty header (unknown token type)", scopes: []string{""}, limited: false},
 		{name: "fine-grained (no header)", scopes: nil, limited: false},
 	}
 

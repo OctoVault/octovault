@@ -300,14 +300,20 @@ func (a *AccessChecker) probeList(ctx context.Context, spec probeSpec) (bool, er
 }
 
 // limitedToPublic 클래식 PAT/OAuth 토큰은 X-OAuth-Scopes 로 스코프를 알려준다.
-// 헤더가 있는데 "repo" 가 없으면 private 저장소를 읽을 수 없다. 헤더가 없으면 판단하지 않는다.
+// 스코프 목록이 있는데 "repo" 가 없으면 private 저장소를 읽을 수 없다.
+//
+// 헤더가 없거나 비어 있으면 판단하지 않는다. fine-grained PAT 와 GitHub App 토큰은 스코프 대신
+// 저장소별 권한을 쓰므로 이 헤더가 의미가 없고, 빈 값으로 오는지 아예 빠지는지가 문서로 보장되지
+// 않는다. 그 토큰들을 잘못 경고하느니, 스코프가 하나도 없는 클래식 PAT 를 놓치는 쪽을 택한다.
 func limitedToPublic(h http.Header) bool {
-	if len(h.Values("X-OAuth-Scopes")) == 0 {
+
+	scopes := strings.TrimSpace(h.Get("X-OAuth-Scopes"))
+	if scopes == "" {
 
 		return false
 	}
 
-	for _, scope := range strings.Split(h.Get("X-OAuth-Scopes"), ",") {
+	for _, scope := range strings.Split(scopes, ",") {
 		if strings.TrimSpace(scope) == "repo" {
 
 			return false
