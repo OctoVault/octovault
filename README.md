@@ -105,6 +105,9 @@ spec:
     - team-b
 ```
 `allowedNamespaces` limits which namespaces' `OctoVault`s may use this `OctoRepository`. The token can read every repository it has access to, so set this in multi-tenant clusters. An `OctoVault` in an unlisted namespace fails with reason `NamespaceNotAllowed`.
+Removing a namespace from the list stops further syncs, but does not delete targets that were already
+synced there: they keep the last data fetched with this token. Delete those `OctoVault`s (or their
+targets) if the data must not remain in that namespace.
 
 Credentials `Secret`:
 ```yaml
