@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/octovault/octovault/internal/lru"
 	ovmetrics "github.com/octovault/octovault/internal/metrics"
 )
 
@@ -47,7 +48,7 @@ type AccessChecker struct {
 	userAgent   string
 	ttl         time.Duration
 	negativeTTL time.Duration
-	cache       *lru[accessEntry]
+	cache       *lru.Cache[accessEntry]
 	now         func() time.Time
 }
 
@@ -112,7 +113,7 @@ func NewAccessChecker(opts AccessOptions) *AccessChecker {
 		userAgent:   ua,
 		ttl:         ttl,
 		negativeTTL: negTTL,
-		cache:       newLRU[accessEntry](opts.CacheEntries),
+		cache:       lru.New[accessEntry](opts.CacheEntries),
 		now:         nowFn,
 	}
 }
@@ -137,7 +138,7 @@ func (a *AccessChecker) CheckAccess(ctx context.Context, org, token string) (Acc
 	key := credentialScopedKey(owner, token)
 	now := a.now()
 
-	prev, hadPrev := a.cache.get(key)
+	prev, hadPrev := a.cache.Get(key)
 	if hadPrev && now.Before(prev.expiresAt) {
 
 		ovmetrics.CredentialCheckCacheTotal.WithLabelValues("hit").Inc()
@@ -154,7 +155,7 @@ func (a *AccessChecker) CheckAccess(ctx context.Context, org, token string) (Acc
 	})
 
 	result := AccessResult{LimitedToPublic: outcome.limitedToPublic}
-	a.cache.put(key, accessEntry{
+	a.cache.Put(key, accessEntry{
 		err:        err,
 		result:     result,
 		expiresAt:  now.Add(a.cacheTTLFor(err)),
