@@ -58,7 +58,8 @@ func WithLoadTimeout[V any](d time.Duration) Option[V] {
 	}
 }
 
-// WithEvictHook 크기 한도 때문에 항목이 밀려날 때마다 밀려난 수와 함께 호출된다(지표용).
+// WithEvictHook 크기 한도 때문에 아직 유효한 항목이 밀려날 때마다 그 수와 함께 호출된다(지표용).
+// 이미 만료된 항목이 밀려난 것은 세지 않는다.
 func WithEvictHook[V any](fn func(n int)) Option[V] {
 	return func(c *Cache[V]) {
 
@@ -139,9 +140,23 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 }
 
 func (c *Cache[V]) store(key string, v V) {
-	if n := c.entries.Put(key, entry[V]{value: v, exp: c.now().Add(c.ttl)}); n > 0 && c.onEvict != nil {
 
-		c.onEvict(n)
+	now := c.now()
+	evicted := c.entries.Put(key, entry[V]{value: v, exp: now.Add(c.ttl)})
+
+	// 이미 만료된 항목이 밀려난 것은 용량 부족이 아니다. 아직 유효했던 항목만 세야
+	// "한도를 올리라"는 판단의 근거가 된다.
+	live := 0
+	for _, e := range evicted {
+		if e.exp.After(now) {
+
+			live++
+		}
+	}
+
+	if live > 0 && c.onEvict != nil {
+
+		c.onEvict(live)
 	}
 }
 

@@ -42,8 +42,8 @@ func TestLRU_DropIf(t *testing.T) {
 func TestLRU_PutReportsEvictions(t *testing.T) {
 
 	c := New[int](2)
-	require.Equal(t, 0, c.Put("a", 1))
-	require.Equal(t, 0, c.Put("b", 2))
-	require.Equal(t, 0, c.Put("a", 3), "updating an existing key evicts nothing")
-	require.Equal(t, 1, c.Put("c", 4))
+	require.Empty(t, c.Put("a", 1))
+	require.Empty(t, c.Put("b", 2))
+	require.Empty(t, c.Put("a", 3), "updating an existing key evicts nothing")
+	require.Equal(t, []int{2}, c.Put("c", 4), "b is the least recently used")
 }

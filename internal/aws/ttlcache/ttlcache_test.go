@@ -286,3 +286,27 @@ func TestCache_DoneContextDoesNotStartLoad(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	require.False(t, called)
 }
+
+// 이미 만료된 항목이 밀려난 것은 용량 부족이 아니므로 세지 않는다.
+func TestCache_EvictHookIgnoresExpiredEntries(t *testing.T) {
+
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	evicted := 0
+	c := New(time.Minute,
+		WithMaxEntries[int](1),
+		WithClock[int](func() time.Time { return now }),
+		WithEvictHook[int](func(n int) { evicted += n }))
+
+	_, err := c.Get(ctx, "old", func(context.Context) (int, error) { return 1, nil })
+	require.NoError(t, err)
+
+	now = now.Add(2 * time.Minute) // old 는 만료됐다
+	_, err = c.Get(ctx, "new", func(context.Context) (int, error) { return 2, nil })
+	require.NoError(t, err)
+	require.Equal(t, 0, evicted, "an expired entry pushed out is not a capacity eviction")
+
+	_, err = c.Get(ctx, "newer", func(context.Context) (int, error) { return 3, nil })
+	require.NoError(t, err)
+	require.Equal(t, 1, evicted, "a still-valid entry pushed out is")
+}

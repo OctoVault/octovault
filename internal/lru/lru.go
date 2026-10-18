@@ -59,11 +59,12 @@ func (c *Cache[V]) Get(key string) (V, bool) {
 	return el.Value.(*record[V]).value, true
 }
 
-// Put 값을 넣는다. 크기를 넘어 밀려난 항목 수를 반환한다(호출자가 지표로 쓸 수 있다).
-func (c *Cache[V]) Put(key string, value V) int {
+// Put 값을 넣는다. 크기를 넘어 밀려난 값들을 반환한다. 호출자는 이를 보고 지표를 남기거나
+// (예: 아직 유효했던 값만 세기) 무시할 수 있다.
+func (c *Cache[V]) Put(key string, value V) []V {
 	if c == nil {
 
-		return 0
+		return nil
 	}
 
 	c.mu.Lock()
@@ -74,12 +75,12 @@ func (c *Cache[V]) Put(key string, value V) int {
 		el.Value.(*record[V]).value = value
 		c.order.MoveToFront(el)
 
-		return 0
+		return nil
 	}
 
 	c.entries[key] = c.order.PushFront(&record[V]{key: key, value: value})
 
-	evicted := 0
+	var evicted []V
 	for c.order.Len() > c.max {
 
 		oldest := c.order.Back()
@@ -88,9 +89,10 @@ func (c *Cache[V]) Put(key string, value V) int {
 			break
 		}
 
+		rec := oldest.Value.(*record[V])
 		c.order.Remove(oldest)
-		delete(c.entries, oldest.Value.(*record[V]).key)
-		evicted++
+		delete(c.entries, rec.key)
+		evicted = append(evicted, rec.value)
 	}
 
 	return evicted
