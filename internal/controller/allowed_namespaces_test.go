@@ -14,6 +14,7 @@ import (
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -96,4 +97,58 @@ func TestOctoVault_AllowedNamespaces_Empty_AllowsAll(t *testing.T) {
 	updated, _ := reconcileWithAllowedNamespaces(t, "anywhere", nil)
 
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+}
+
+// 거부는 자격증명 Secret 을 읽기 전에 일어나야 한다. Secret 이 없어도 CredentialsNotFound 가 아니라
+// NamespaceNotAllowed 여야 하고, Secret 조회 자체가 일어나지 않아야 한다.
+func TestOctoVault_AllowedNamespaces_RejectsBeforeReadingCredentials(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/allowed.yaml"
+
+	scheme := newScheme(t)
+	orepo := &octovaultv1alpha1.OctoRepository{
+		ObjectMeta: metav1.ObjectMeta{Name: "orepo-allowed"},
+		Spec: octovaultv1alpha1.OctoRepositorySpec{
+			Organization:      "github.com/test-org",
+			CredentialsRef:    octovaultv1alpha1.NamespacedObjectRef{Name: "missing", Namespace: "cred-ns"},
+			AllowedNamespaces: []string{"team-a"},
+		},
+	}
+	ov := &octovaultv1alpha1.OctoVault{
+		ObjectMeta: metav1.ObjectMeta{Name: "ov-allowed", Namespace: "intruder"},
+		Spec: octovaultv1alpha1.OctoVaultSpec{
+			OctoRepositoryRef: octovaultv1alpha1.LocalObjectRef{Name: "orepo-allowed"},
+			Repository:        "test-org/test-repo",
+			Path:              path,
+			TargetName:        "target-resource",
+		},
+	}
+
+	secretReads := 0
+	cl := interceptor.NewClient(newFakeClient(t, scheme, orepo, ov).(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok {
+
+				secretReads++
+			}
+
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	rec := &OctoVaultReconciler{
+		Client:   cl,
+		Scheme:   scheme,
+		Recorder: record.NewFakeRecorder(64),
+		Git:      &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"},
+	}
+
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var updated octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &updated))
+	assert.Equal(t, "NamespaceNotAllowed", updated.Status.Conditions[0].Reason)
+	assert.Zero(t, secretReads, "the credentials Secret must not be read for a disallowed namespace")
 }
