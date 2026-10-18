@@ -340,7 +340,7 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
         - private repo read → `repo`,
         - sometimes `read:org` as org policy requires.
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
-- **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters read with `withDecryption: true`.
+- **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
 - Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
   `OctoVault` does not delete its targets: the finalizer removes the `ownerReference` first (see below).
 - An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
