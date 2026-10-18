@@ -51,6 +51,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -326,13 +327,17 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
-	// 5) metadata.type 이 바뀌었으면 이전 종류의 대상을 정리한다. 실패하면 ResolvedType 을
-	// 갱신하지 않아야 다음 poll 에서 다시 시도한다.
-	if prev := ov.Status.ResolvedType; prev != "" && prev != resolvedType {
-		if err := r.deleteStaleTarget(ctx, &ov, prev); err != nil {
+	// 5) metadata.type 이 바뀌었거나 이전 정리가 실패했으면, 방금 적용한 것과 다른 종류의 대상을 지운다.
+	//
+	// 실패해도 ResolvedType 은 실제로 적용한 종류로 기록한다. 이전 종류로 남겨 두면 삭제 시
+	// 새 대상이 GC 될 수 있다(orphanTargets 는 두 종류를 모두 풀지만 상태도 사실과 맞아야 한다).
+	// 재시도는 Ready reason 으로 판단하므로, 정리 전에 원래 종류로 되돌려도 남은 대상이 지워진다.
+	if r.staleCleanupNeeded(&ov, resolvedType) {
+		if err := r.deleteStaleTarget(ctx, &ov, otherOutputKind(resolvedType)); err != nil {
 
-			r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, "StaleTargetCleanupFailed",
-				fmt.Sprintf("applied %s but failed to delete previous %s %s/%s: %v", resolvedType, prev, targetNS, ov.Spec.TargetName, err)))
+			r.updateStatusIfChanged(ctx, &ov, fail(r.syncedStatus(&ov, applied), ReasonStaleTargetCleanupFailed,
+				fmt.Sprintf("applied %s but failed to delete the previous %s %s/%s: %v",
+					resolvedType, otherOutputKind(resolvedType), targetNS, ov.Spec.TargetName, err)))
 			return ctrl.Result{RequeueAfter: poll}, nil
 		}
 	}
@@ -679,6 +684,30 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 	return appliedOutput{resolvedType: resolvedType, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
 }
 
+// ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
+const ReasonStaleTargetCleanupFailed = "StaleTargetCleanupFailed"
+
+// staleCleanupNeeded 종류가 바뀌었거나, 지난번 정리가 실패한 채로 남아 있으면 true.
+func (r *OctoVaultReconciler) staleCleanupNeeded(ov *octovaultv1alpha1.OctoVault, resolvedType string) bool {
+	if prev := ov.Status.ResolvedType; prev != "" && prev != resolvedType {
+
+		return true
+	}
+
+	ready := apimeta.FindStatusCondition(ov.Status.Conditions, CondReady)
+
+	return ready != nil && ready.Reason == ReasonStaleTargetCleanupFailed
+}
+
+func otherOutputKind(kind string) string {
+	if kind == string(octovaultv1alpha1.OutputConfigMap) {
+
+		return string(octovaultv1alpha1.OutputSecret)
+	}
+
+	return string(octovaultv1alpha1.OutputConfigMap)
+}
+
 func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovaultv1alpha1.OctoVault, out appliedOutput) {
 
 	targetNS := ov.Spec.TargetNamespace
@@ -686,6 +715,18 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 
 		targetNS = ov.Namespace
 	}
+
+	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
+	// 의미 없는 이벤트가 쌓인다.
+	if r.updateStatusIfChanged(ctx, ov, r.syncedStatus(ov, out)) {
+
+		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
+			"OctoVault synced: revision=%s, type=%s, target=%s/%s", out.rev, out.resolvedType, targetNS, ov.Spec.TargetName)
+	}
+}
+
+// syncedStatus 적용 결과를 반영한 Synced 상태. 기록은 호출자가 한다.
+func (r *OctoVaultReconciler) syncedStatus(ov *octovaultv1alpha1.OctoVault, out appliedOutput) octovaultv1alpha1.OctoVaultStatus {
 
 	now := metav1.Now()
 	next := ov.Status
@@ -700,13 +741,7 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next.ExternalRefsSummary = summarizeExtRefs(out.extRefs)
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
-	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
-	// 의미 없는 이벤트가 쌓인다.
-	if r.updateStatusIfChanged(ctx, ov, next) {
-
-		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
-			"OctoVault synced: revision=%s, type=%s, target=%s/%s", out.rev, out.resolvedType, targetNS, ov.Spec.TargetName)
-	}
+	return next
 }
 
 // effectiveRef 동기화에 쓴 ref. 둘 다 비어 있으면 저장소의 기본 브랜치를 뜻하는 빈 문자열이다.
