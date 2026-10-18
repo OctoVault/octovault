@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,7 @@ import (
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -173,4 +175,42 @@ func TestOctoVault_DeleteAfterTargetRename_RetainsBothTargets(t *testing.T) {
 		require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: name, Namespace: ov.Namespace}, &cm), name)
 		assert.Empty(t, cm.OwnerReferences, "%s must be released so GC keeps it", name)
 	}
+}
+
+// 대상을 놓아주지 못하면 파이널라이저를 지우지 않고 에러로 재시도해야 한다.
+func TestOctoVault_OrphanFailure_KeepsFinalizer(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+
+				return errors.New("apiserver unavailable")
+			}
+
+			return c.Update(ctx, obj, opts...)
+		},
+	})
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.Error(t, err, "the failure must be returned so the deletion is retried")
+
+	require.NoError(t, cl.Get(ctx, key, &current), "the OctoVault must still exist")
+	assert.Contains(t, current.Finalizers, FinalizerOV)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
+	assert.NotEmpty(t, cm.OwnerReferences, "nothing was released yet")
 }
