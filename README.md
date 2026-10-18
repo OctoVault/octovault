@@ -287,6 +287,11 @@ Breaking changes to check before upgrading:
   Otherwise the `OctoVault` fails with `SecretMissingPassword`, or authentication fails with 401 if only the
   encoding was in an annotation.
 
+- **Numbers extracted with `jsonKey` keep their original form.** Values used to pass through a float64, so
+  large integers lost digits (`12345678901234567890` became `12345678901234567000`) and other forms were
+  normalized (`1e3` became `1000`). They are now copied exactly as written in the JSON, so the resulting
+  Secret value can change on the first sync after upgrading.
+
 ### Manual CRDs
 
 If you prefer manual steps:
