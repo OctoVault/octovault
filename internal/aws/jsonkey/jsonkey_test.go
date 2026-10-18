@@ -34,3 +34,21 @@ func TestExtract(t *testing.T) {
 	_, err = Extract(doc, " ")
 	require.ErrorContains(t, err, "jsonKey required")
 }
+
+// 큰 정수가 float64 를 거치면 자릿수가 깨진다(예: 2^53 초과 ID, 계정 번호).
+func TestExtract_KeepsNumberPrecision(t *testing.T) {
+
+	doc := []byte(`{"id":12345678901234567890,"nested":{"n":9007199254740993,"f":1.50}}`)
+
+	got, err := Extract(doc, "id")
+	require.NoError(t, err)
+	require.Equal(t, "12345678901234567890", string(got))
+
+	got, err = Extract(doc, "nested")
+	require.NoError(t, err)
+	require.JSONEq(t, `{"n":9007199254740993,"f":1.50}`, string(got))
+	require.Contains(t, string(got), "9007199254740993")
+
+	_, err = Extract([]byte(`{"a":"b"} trailing`), "a")
+	require.ErrorContains(t, err, "parse json")
+}

@@ -3,9 +3,11 @@
 package jsonkey
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -17,8 +19,8 @@ func Extract(value []byte, jsonKey string) ([]byte, error) {
 		return nil, errors.New("jsonKey required")
 	}
 
-	var t interface{}
-	if err := json.Unmarshal(value, &t); err != nil {
+	t, err := decode(value)
+	if err != nil {
 
 		return nil, fmt.Errorf("parse json: %w", err)
 	}
@@ -41,9 +43,11 @@ func Extract(value []byte, jsonKey string) ([]byte, error) {
 		cur = next
 	}
 
-	if s, ok := cur.(string); ok {
-
-		return []byte(s), nil
+	switch v := cur.(type) {
+	case string:
+		return []byte(v), nil
+	case json.Number:
+		return []byte(v.String()), nil
 	}
 
 	b, err := json.Marshal(cur)
@@ -53,4 +57,25 @@ func Extract(value []byte, jsonKey string) ([]byte, error) {
 	}
 
 	return b, nil
+}
+
+// decode 숫자를 float64 가 아니라 json.Number 로 읽어 원래 표기를 그대로 보존한다.
+// json.Unmarshal 처럼 값 뒤에 다른 내용이 있으면 에러로 본다.
+func decode(value []byte) (interface{}, error) {
+
+	dec := json.NewDecoder(bytes.NewReader(value))
+	dec.UseNumber()
+
+	var t interface{}
+	if err := dec.Decode(&t); err != nil {
+
+		return nil, err
+	}
+
+	if _, err := dec.Token(); err != io.EOF {
+
+		return nil, errors.New("unexpected data after the JSON value")
+	}
+
+	return t, nil
 }
