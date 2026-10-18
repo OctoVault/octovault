@@ -109,6 +109,29 @@ func (c *Cache[V]) Drop(key string) {
 	delete(c.entries, key)
 }
 
+// DropIf key 의 현재 값이 pred 를 만족할 때만 지운다. 확인과 삭제를 한 락 안에서 하므로,
+// 값을 읽은 뒤 다른 고루틴이 새 값을 넣었다면 그 새 값은 지우지 않는다. 지웠으면 true.
+func (c *Cache[V]) DropIf(key string, pred func(V) bool) bool {
+	if c == nil {
+
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	el, ok := c.entries[key]
+	if !ok || !pred(el.Value.(*record[V]).value) {
+
+		return false
+	}
+
+	c.order.Remove(el)
+	delete(c.entries, key)
+
+	return true
+}
+
 // Len 현재 항목 수.
 func (c *Cache[V]) Len() int {
 	if c == nil {

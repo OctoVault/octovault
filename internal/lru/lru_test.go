@@ -22,3 +22,19 @@ func TestLRU_EvictsOldestBeyondCapacity(t *testing.T) {
 		require.True(t, ok, fmt.Sprintf("%s 는 남아있어야 한다", k))
 	}
 }
+
+func TestLRU_DropIf(t *testing.T) {
+
+	c := New[int](4)
+	c.Put("a", 1)
+
+	require.False(t, c.DropIf("a", func(v int) bool { return v == 2 }), "a different value must be kept")
+	_, ok := c.Get("a")
+	require.True(t, ok)
+
+	require.True(t, c.DropIf("a", func(v int) bool { return v == 1 }))
+	_, ok = c.Get("a")
+	require.False(t, ok)
+
+	require.False(t, c.DropIf("missing", func(int) bool { return true }))
+}
