@@ -272,6 +272,16 @@ controller:
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
     AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
 ```
+### Upgrading
+
+Breaking changes to check before upgrading:
+
+- **Credentials from Secret annotations are no longer read.** Earlier versions let an `OctoVault` take the
+  token from the `octovault.it/password` annotation, and the encoding from `octovault.it/passwordEncoding`,
+  when the Secret's data had no `password`. Move both into the Secret's data (`password`, `passwordEncoding`).
+  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or authentication fails with 401 if only the
+  encoding was in an annotation.
+
 ### Manual CRDs
 
 If you prefer manual steps:
