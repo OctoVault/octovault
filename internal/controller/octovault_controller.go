@@ -70,6 +70,31 @@ const DefaultPollInterval = 5 * time.Minute
 // 한 PAT 를 여러 OctoVault 가 나눠 쓰므로 짧은 주기 하나가 전체 한도를 잠식할 수 있다.
 const MinPollInterval = 30 * time.Second
 
+// warnUnparsablePollInterval CRD 패턴은 통과했지만 Go duration 범위를 넘는 값(예: 9999999999h)은
+// 기본값으로 쓰되 조용히 넘기지 않는다. 같은 OctoVault 의 같은 값은 한 번만 로그로 남긴다.
+func (r *OctoVaultReconciler) warnUnparsablePollInterval(ctx context.Context, ov *octovaultv1alpha1.OctoVault) {
+
+	v := strings.TrimSpace(ov.Spec.PollInterval)
+	if v == "" {
+
+		return
+	}
+
+	_, err := time.ParseDuration(v)
+	if err == nil {
+
+		return
+	}
+
+	if _, seen := r.pollWarned.LoadOrStore(string(ov.UID)+"/"+v, struct{}{}); seen {
+
+		return
+	}
+
+	logf.FromContext(ctx).Info("spec.pollInterval cannot be parsed; using the default",
+		"pollInterval", v, "default", DefaultPollInterval, "error", err.Error())
+}
+
 // pollIntervalOf spec.pollInterval 을 해석한다. 비었거나 해석할 수 없으면 기본값,
 // 하한보다 짧으면(0s 포함) 하한을 쓴다.
 func pollIntervalOf(ov *octovaultv1alpha1.OctoVault) time.Duration {
@@ -196,6 +221,9 @@ type OctoVaultReconciler struct {
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 
+	// pollWarned 해석할 수 없는 pollInterval 을 이미 로그로 남긴 "<uid>/<값>".
+	pollWarned sync.Map
+
 	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
 	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
 	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
@@ -273,13 +301,7 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	r.ensurePendingInit(ctx, &ov)
 
 	poll := pollIntervalOf(&ov)
-	if v := strings.TrimSpace(ov.Spec.PollInterval); v != "" {
-		if _, err := time.ParseDuration(v); err != nil {
-
-			// CRD 패턴은 통과했지만 Go duration 범위를 넘는 값(예: 9999999999h). 기본값으로 쓰되 조용히 넘기지 않는다.
-			logger.Info("spec.pollInterval cannot be parsed; using the default", "pollInterval", v, "default", DefaultPollInterval, "error", err.Error())
-		}
-	}
+	r.warnUnparsablePollInterval(ctx, &ov)
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
