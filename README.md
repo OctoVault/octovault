@@ -365,7 +365,10 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
   ServiceAccount. The chart's ServiceMonitor sends the token.
 - Secure metrics are served over TLS, so Prometheus must also trust the certificate:
   - **Your own certificate (recommended):** put `tls.crt`/`tls.key` in a Secret and set
-    `metrics.existingSecret`; the controller then serves it (`--metrics-cert-path`). Point
+    `metrics.existingSecret`; the controller then serves it (`--metrics-cert-path`). Earlier chart
+    versions mounted this Secret but never used it, so if you already set `metrics.existingSecret`, make
+    sure the Secret really has `tls.crt` and `tls.key`: the controller now exits at startup if it cannot
+    load them. Point
     `prometheus.serviceMonitor.tlsConfig` at the issuing CA and set `serverName` to the metrics Service
     (`<fullname>-metrics.<namespace>.svc`).
   - **Default self-signed certificate:** without `metrics.existingSecret` the controller generates a

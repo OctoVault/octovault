@@ -17,7 +17,9 @@ spec:
       {{- if .Values.controller.metrics.secure }}
       scheme: {{ .Values.prometheus.serviceMonitor.scheme }}
       # Secure metrics require an authenticated scrape; the scraper's ServiceAccount
-      # needs the <fullname>-metrics-reader ClusterRole.
+      # needs the <fullname>-metrics-reader ClusterRole. bearerTokenFile is deprecated
+      # in prometheus-operator, but `authorization` only takes a Secret reference and
+      # cannot point at the scraper's own projected ServiceAccount token.
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       {{- with .Values.prometheus.serviceMonitor.tlsConfig }}
       tlsConfig:
