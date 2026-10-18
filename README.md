@@ -319,6 +319,9 @@ Breaking changes to check before upgrading:
   points at a number, it is copied exactly as written; when it points at an object or array, that value is
   re-encoded as compact JSON (whitespace dropped, object keys sorted) with its numbers left as written. The
   resulting Secret value can change on the first sync after upgrading.
+- **`pollInterval` below 30s now means 30s.** Earlier versions treated `0m` (and other zero values) as
+  unset and polled every 5 minutes; they now poll every 30 seconds, ten times as often. Set an explicit
+  interval on such `OctoVault`s before upgrading if that is not what you want.
 - **CRDs must be updated by hand.** Helm installs CRDs from the chart's `crds/` folder only on first install
   and never upgrades them. Apply the new CRDs before upgrading the chart, otherwise newer fields and
   values (for example `pollInterval: 90s` or `allowedNamespaces`) are rejected or dropped by the old schema.
