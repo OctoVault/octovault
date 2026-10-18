@@ -29,6 +29,19 @@ func TestUpsertReadyCondition_KeepsTransitionTimeWhenUnchanged(t *testing.T) {
 	assert.Equal(t, then, next[0].LastTransitionTime)
 }
 
+func TestUpsertReadyCondition_TransitionTimeFollowsStatusOnly(t *testing.T) {
+
+	then := metav1.NewTime(metav1.Now().Add(-3600e9))
+	prev := []metav1.Condition{{Type: CondReady, Status: metav1.ConditionFalse, Reason: "FetchFailed", Message: "a", LastTransitionTime: then}}
+
+	sameStatus := upsertReadyCondition(prev, metav1.ConditionFalse, "RateLimited", "b")
+	assert.Equal(t, then, sameStatus[0].LastTransitionTime, "a reason/message change is not a transition")
+	assert.Equal(t, "RateLimited", sameStatus[0].Reason)
+
+	flipped := upsertReadyCondition(prev, metav1.ConditionTrue, "Synced", "ok")
+	assert.NotEqual(t, then, flipped[0].LastTransitionTime, "a status change is a transition")
+}
+
 func TestReadyConditionEqual(t *testing.T) {
 
 	ready := metav1.Condition{Type: CondReady, Status: metav1.ConditionTrue, Reason: "Synced", Message: "ok"}

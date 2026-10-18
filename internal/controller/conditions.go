@@ -9,7 +9,7 @@ import (
 //
 // 입력 슬라이스는 건드리지 않는다. 제자리에서 고치면 호출자가 들고 있는 이전 상태까지
 // 바뀌어, 이전/다음 상태를 비교하는 statusEqual 류가 변경을 감지하지 못한다.
-// LastTransitionTime 은 Status, Reason, Message 중 하나라도 바뀔 때만 갱신한다.
+// LastTransitionTime 은 Status 가 바뀔 때만 갱신한다.
 func upsertReadyCondition(conds []metav1.Condition, status metav1.ConditionStatus, reason, msg string) []metav1.Condition {
 
 	out := append([]metav1.Condition(nil), conds...)
@@ -20,13 +20,16 @@ func upsertReadyCondition(conds []metav1.Condition, status metav1.ConditionStatu
 			continue
 		}
 
-		if out[i].Status != status || out[i].Reason != reason || out[i].Message != msg {
+		// Kubernetes 관례대로 LastTransitionTime 은 Status 가 바뀔 때만 갱신한다.
+		// Reason/Message 만 바뀐 것(예: Failed 사유 변경)은 전이가 아니다.
+		if out[i].Status != status {
 
-			out[i].Status = status
-			out[i].Reason = reason
-			out[i].Message = msg
 			out[i].LastTransitionTime = now
 		}
+
+		out[i].Status = status
+		out[i].Reason = reason
+		out[i].Message = msg
 
 		return out
 	}
