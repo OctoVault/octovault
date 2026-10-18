@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/tools/record"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -204,7 +205,7 @@ func TestOctoVault_DeleteAndRecreate_ResumesManagingTarget(t *testing.T) {
 	require.NoError(t, cl.Delete(ctx, &current))
 	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 	require.NoError(t, err)
-	require.True(t, client.IgnoreNotFound(cl.Get(ctx, key, &current)) == nil)
+	require.True(t, apierrors.IsNotFound(cl.Get(ctx, key, &current)), "the OctoVault must be gone after its finalizer ran")
 
 	recreated := ov.DeepCopy()
 	recreated.ResourceVersion = ""
