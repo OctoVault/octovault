@@ -30,7 +30,9 @@ It also supports external secret sources referenced from your Git-backed `values
 It keeps the target resource in sync on a timer (`spec.pollInterval`), and also reacts right away when the
 target `ConfigMap`/`Secret` is deleted, when `ConfigMap` data is edited by hand, or when OctoVault's own
 labels/annotations or controller reference are changed. Other drift (labels added by third parties, `Secret`
-data edits) is corrected at the next poll, so it never loops against mutating webhooks. If `metadata.type` switches between `ConfigMap` and
+data edits) is corrected at the next poll, so labels injected by mutating webhooks or policy engines don't
+cause a reconcile loop. Something that keeps rewriting the `ConfigMap` data will still trigger a reconcile
+(and a conditional GitHub request) every time it does so; don't point another controller at the same data. If `metadata.type` switches between `ConfigMap` and
 `Secret`, the previous object (if this `OctoVault` controls it) is deleted.
 
 Polling is designed to stay well inside GitHub's PAT rate limit: each poll issues a
