@@ -141,3 +141,36 @@ func TestOctoVault_Delete_ReleasesTargetsOfBothKinds(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
 	assert.Empty(t, sec.OwnerReferences, "the Secret must be released even though status says ConfigMap")
 }
+
+// targetName 을 바꾼 뒤 지워도 이전 이름의 대상까지 남아야 한다(GC 되면 안 된다).
+func TestOctoVault_DeleteAfterTargetRename_RetainsBothTargets(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	oldName := current.Spec.TargetName
+	current.Spec.TargetName = oldName + "-v2"
+	require.NoError(t, cl.Update(ctx, &current))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(ctx, key, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	for _, name := range []string{oldName, oldName + "-v2"} {
+		var cm corev1.ConfigMap
+		require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: name, Namespace: ov.Namespace}, &cm), name)
+		assert.Empty(t, cm.OwnerReferences, "%s must be released so GC keeps it", name)
+	}
+}

@@ -820,51 +820,68 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	}
 
 	var firstErr error
-	tryCM := func() {
+	release := func(obj client.Object) {
+		if removeOwner(obj) {
+			if err := r.Update(ctx, obj); err != nil && firstErr == nil {
+
+				firstErr = err
+			}
+		}
+	}
+
+	// 현재 spec.targetName 만 보면 안 된다. targetName 을 바꾸면 이전 이름의 대상도 여전히 이
+	// OctoVault 소유로 남아 있어, 그대로 지우면 GC 가 함께 삭제한다. 그래서 생성 시 붙인 owner
+	// 라벨로 이 OctoVault 가 만든 대상을 모두 찾는다. 라벨이 없는 오래된 대상을 위해 현재 이름도
+	// 직접 확인한다. ResolvedType 과 무관하게 두 종류를 모두 본다(상태가 실제와 어긋날 수 있다).
+	// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 남의 리소스에는 영향이 없다.
+	owned := client.MatchingLabels{LabelOVOwnerNS: ov.Namespace, LabelOVOwnerName: labelSafe(ov.Name)}
+	current := types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}
+	recordErr := func(err error) {
+		if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+
+			firstErr = err
+		}
+	}
+
+	var cms corev1.ConfigMapList
+	recordErr(r.List(ctx, &cms, client.InNamespace(targetNS), owned))
+	seenCM := map[string]bool{}
+	for i := range cms.Items {
+
+		seenCM[cms.Items[i].Name] = true
+		release(&cms.Items[i])
+	}
+
+	if !seenCM[current.Name] {
 
 		var cm corev1.ConfigMap
-		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &cm); err != nil {
-			if !apierrors.IsNotFound(err) && firstErr == nil {
+		err := r.Get(ctx, current, &cm)
+		recordErr(err)
+		if err == nil {
 
-				firstErr = err
-			}
-
-			return
-		}
-
-		if removeOwner(&cm.ObjectMeta) {
-			if err := r.Update(ctx, &cm); err != nil && firstErr == nil {
-
-				firstErr = err
-			}
+			release(&cm)
 		}
 	}
 
-	trySec := func() {
+	var secs corev1.SecretList
+	recordErr(r.List(ctx, &secs, client.InNamespace(targetNS), owned))
+	seenSec := map[string]bool{}
+	for i := range secs.Items {
+
+		seenSec[secs.Items[i].Name] = true
+		release(&secs.Items[i])
+	}
+
+	if !seenSec[current.Name] {
 
 		var sec corev1.Secret
-		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}, &sec); err != nil {
-			if !apierrors.IsNotFound(err) && firstErr == nil {
+		err := r.Get(ctx, current, &sec)
+		recordErr(err)
+		if err == nil {
 
-				firstErr = err
-			}
-
-			return
-		}
-
-		if removeOwner(&sec.ObjectMeta) {
-			if err := r.Update(ctx, &sec); err != nil && firstErr == nil {
-
-				firstErr = err
-			}
+			release(&sec)
 		}
 	}
-
-	// ResolvedType 만 믿지 않고 두 종류를 모두 확인한다. 상태가 실제 대상과 어긋날 수 있다
-	// (이전 버전이 실패 시 지운 경우, 타입 전환 직후 등). 하나라도 ownerRef 가 남으면 GC 가 지운다.
-	// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 둘 다 시도해도 안전하다.
-	tryCM()
-	trySec()
 
 	return firstErr
 }
