@@ -138,9 +138,18 @@ func (c *Cache[V]) lookup(key string) (V, bool) {
 
 	if !e.exp.After(c.now()) {
 
-		c.entries.Drop(key)
+		c.dropIfUnchanged(key, e)
 		return zero, false
 	}
 
 	return e.value, true
+}
+
+// dropIfUnchanged 읽어 온 만료 항목이 그대로 있을 때만 지운다. 확인한 뒤 singleflight 로 새 값이
+// 들어왔다면(만료 시각이 다르다) 그 값은 남긴다. 그렇지 않으면 방금 채운 값을 지워 AWS 호출이
+// 다시 몰린다.
+func (c *Cache[V]) dropIfUnchanged(key string, seen entry[V]) {
+	c.entries.DropIf(key, func(cur entry[V]) bool {
+		return cur.exp.Equal(seen.exp)
+	})
 }

@@ -121,8 +121,10 @@ func TestCache_ConcurrentMissesLoadOnce(t *testing.T) {
 		results <- err
 	}
 
-	// 첫 호출이 load 안에서 막혀 있는 동안 나머지를 시작하면, 나머지는 반드시 진행 중인
-	// 호출에 합류한다. 타이밍에 기대지 않고 결정적으로 검증할 수 있다.
+	// 결과가 타이밍과 무관하게 정해지는 이유: 첫 호출은 release 전까지 load 안에서 막혀 있다.
+	// 나머지 호출은 (a) 그 진행 중인 호출에 합류하거나, (b) release 뒤에 도착하면 이미 저장된
+	// 값을 lookup 또는 DoChan 안의 재확인에서 읽는다. 값은 진행 중인 호출이 끝나기 전에 저장되므로
+	// 어느 경로든 load 는 다시 실행되지 않는다. 그래서 loads 는 항상 1 이다.
 	go get()
 	<-started
 	var wg sync.WaitGroup
@@ -215,4 +217,28 @@ func TestCache_LoadHasItsOwnTimeout(t *testing.T) {
 		return "", ctx.Err()
 	})
 	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// 만료 항목을 읽은 뒤 지우기 전에 새 값이 들어오면, 새 값은 지워지지 않아야 한다.
+func TestCache_ExpiredDropKeepsFreshlyStoredValue(t *testing.T) {
+
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+	c := New(time.Minute, WithClock[string](func() time.Time { return now }))
+
+	_, err := c.Get(ctx, "k", func(context.Context) (string, error) { return "old", nil })
+	require.NoError(t, err)
+	stale, ok := c.entries.Get("k")
+	require.True(t, ok)
+
+	// 만료 후 다른 호출이 새 값을 넣은 상황을 만든다.
+	now = now.Add(2 * time.Minute)
+	c.entries.Put("k", entry[string]{value: "fresh", exp: now.Add(time.Minute)})
+
+	// 앞서 읽어 둔 만료 항목 기준으로 지우려 해도 새 값은 남아야 한다.
+	c.dropIfUnchanged("k", stale)
+
+	v, err := c.Get(ctx, "k", func(context.Context) (string, error) { return "reloaded", nil })
+	require.NoError(t, err)
+	require.Equal(t, "fresh", v)
 }
