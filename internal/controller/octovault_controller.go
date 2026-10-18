@@ -685,6 +685,23 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 // ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
 const ReasonStaleTargetCleanupFailed = "StaleTargetCleanupFailed"
 
+// staleSecretExpected 이전 출력이 Secret 이었거나 지난 정리가 실패해, 남은 Secret 이 있을 수 있다.
+func staleSecretExpected(ov *octovaultv1alpha1.OctoVault) bool {
+	if ov.Status.ResolvedType == string(octovaultv1alpha1.OutputSecret) {
+
+		return true
+	}
+
+	for _, c := range ov.Status.Conditions {
+		if c.Type == CondReady && c.Reason == ReasonStaleTargetCleanupFailed {
+
+			return true
+		}
+	}
+
+	return false
+}
+
 func otherOutputKind(kind string) string {
 	if kind == string(octovaultv1alpha1.OutputConfigMap) {
 
@@ -897,9 +914,11 @@ func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovau
 	case string(octovaultv1alpha1.OutputConfigMap):
 		obj = &corev1.ConfigMap{}
 	case string(octovaultv1alpha1.OutputSecret):
-		// Secret 조회는 캐시를 거치지 않으므로, 매 poll 마다 API 를 부르지 않도록 메타데이터 캐시로
-		// 먼저 존재와 소유를 확인한다. 지우는 데에는 이름과 UID 만 있으면 된다.
-		if r.TargetSecrets != nil {
+		// Secret 조회는 캐시를 거치지 않으므로, 평소에는 매 poll 마다 API 를 부르지 않도록 메타데이터
+		// 캐시로 먼저 존재와 소유를 확인한다. 지우는 데에는 이름과 UID 만 있으면 된다.
+		// 다만 이 캐시는 managed-by 라벨로 범위가 좁혀져 있어, 라벨이 바뀐 Secret 은 보이지 않는다.
+		// 남은 Secret 이 있을 법한 때(방금 Secret 에서 바뀌었거나 지난 정리가 실패했을 때)는 API 를 본다.
+		if r.TargetSecrets != nil && !staleSecretExpected(ov) {
 
 			secretMeta := &metav1.PartialObjectMetadata{}
 			secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))

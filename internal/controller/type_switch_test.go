@@ -16,6 +16,7 @@ import (
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -203,4 +204,51 @@ func TestOctoVault_TypeSwitch_CleanupRetrySurvivesOtherFailures(t *testing.T) {
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
 	err := cl.Get(ctx, target, &corev1.ConfigMap{})
 	assert.True(t, err != nil && client.IgnoreNotFound(err) == nil, "the stale ConfigMap must still be cleaned up")
+}
+
+// blindSecretCache managed-by 라벨이 바뀌어 메타데이터 캐시에서 보이지 않게 된 Secret 을 흉내 낸다.
+type blindSecretCache struct {
+	cache.Cache
+}
+
+func (blindSecretCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+}
+
+// Secret 에서 ConfigMap 으로 바뀐 직후에는 메타데이터 캐시에 없더라도 API 로 확인해 남은 Secret 을 지운다.
+func TestOctoVault_TypeSwitch_SecretMissingFromMetadataCacheIsStillCleaned(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/switch.yaml"
+
+	fetcher := &staticFetcher{files: map[string][]byte{path: sampleSecretYAML}, rev: "rev1"}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+	rec.TargetSecrets = blindSecretCache{}
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	target := client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.NoError(t, cl.Get(ctx, target, &corev1.Secret{}))
+
+	fetcher.files[path] = sampleConfigMapYAML
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(ctx, target, &corev1.ConfigMap{}))
+	err = cl.Get(ctx, target, &corev1.Secret{})
+	assert.True(t, err != nil && client.IgnoreNotFound(err) == nil, "the previous Secret must be deleted even if the metadata cache cannot see it")
+}
+
+func TestStaleSecretExpected(t *testing.T) {
+
+	ov := &octovaultv1alpha1.OctoVault{}
+	assert.False(t, staleSecretExpected(ov))
+
+	ov.Status.ResolvedType = "Secret"
+	assert.True(t, staleSecretExpected(ov))
+
+	ov.Status.ResolvedType = string(octovaultv1alpha1.OutputConfigMap)
+	ov.Status.Conditions = []metav1.Condition{{Type: CondReady, Reason: ReasonStaleTargetCleanupFailed}}
+	assert.True(t, staleSecretExpected(ov))
 }
