@@ -65,6 +65,9 @@ type OctoRepositoryReconciler struct {
 	Workers  int
 
 	Checker OrgAccessChecker
+
+	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
+	SecretCache client.Reader
 }
 
 // DefaultCredentialRecheckInterval 자격증명 재검증 주기.
@@ -191,7 +194,7 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 		Namespace: o.Spec.CredentialsRef.Namespace,
 	}
 
-	if err := r.Get(ctx, secKey, &sec); err != nil {
+	if err := getCredentialSecret(ctx, r.SecretCache, r.Client, secKey, &sec); err != nil {
 		if apierrors.IsNotFound(err) {
 
 			msg := fmt.Sprintf("secret %s not found", secKey.Name)

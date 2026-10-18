@@ -164,6 +164,9 @@ type OctoVaultReconciler struct {
 
 	// reservedWarned UID → 이미 알린, values.yaml 에서 무시한 octovault.it 키 목록.
 	reservedWarned sync.Map
+
+	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
+	SecretCache client.Reader
 }
 
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults,verbs=get;list;watch;create;update;patch;delete
@@ -327,7 +330,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	var cred corev1.Secret
 	secKey := types.NamespacedName{Namespace: orepo.Spec.CredentialsRef.Namespace, Name: orepo.Spec.CredentialsRef.Name}
 
-	if err := r.Get(ctx, secKey, &cred); err != nil {
+	if err := getCredentialSecret(ctx, r.SecretCache, r.Client, secKey, &cred); err != nil {
 		if apierrors.IsNotFound(err) {
 
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "CredentialsNotFound", fmt.Sprintf("no Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))

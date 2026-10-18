@@ -296,6 +296,8 @@ func main() {
 		Recorder: mgr.GetEventRecorderFor("octorepository-controller"),
 		Workers:  ovMaxWorkers,
 		Checker:  orgChecker,
+
+		SecretCache: mgr.GetCache(),
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoRepository")
@@ -375,6 +377,8 @@ func main() {
 		AwsPS:    awsPSProv,
 
 		Validator: validator,
+
+		SecretCache: mgr.GetCache(),
 	}).SetupWithManager(mgr); err != nil {
 
 		setupLog.Error(err, "unable to create controller", "controller", "OctoVault")
