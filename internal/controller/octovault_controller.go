@@ -182,7 +182,7 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 삭제 중이면 대상 리소스에서 OwnerRef
+	// 삭제 중이면 대상 리소스에서 이 OctoVault 의 ownerRef 를 떼어 GC 되지 않게 남긴 뒤 파이널라이저를 지운다.
 	if !ov.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&ov, FinalizerOV) {
 
@@ -820,12 +820,18 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	}
 
 	var firstErr error
+	// 이미 지워진 대상(NotFound)은 놓아줄 것이 없으므로 실패로 보지 않는다.
+	recordErr := func(err error) {
+		if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
+
+			firstErr = err
+		}
+	}
+
 	release := func(obj client.Object) {
 		if removeOwner(obj) {
-			if err := r.Update(ctx, obj); err != nil && firstErr == nil {
 
-				firstErr = err
-			}
+			recordErr(r.Update(ctx, obj))
 		}
 	}
 
@@ -836,12 +842,6 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 남의 리소스에는 영향이 없다.
 	owned := client.MatchingLabels{LabelOVOwnerNS: ov.Namespace, LabelOVOwnerName: labelSafe(ov.Name)}
 	current := types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}
-	recordErr := func(err error) {
-		if err != nil && !apierrors.IsNotFound(err) && firstErr == nil {
-
-			firstErr = err
-		}
-	}
 
 	var cms corev1.ConfigMapList
 	recordErr(r.List(ctx, &cms, client.InNamespace(targetNS), owned))
@@ -903,8 +903,7 @@ func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *oct
 // fail 직전 상태를 바탕으로 실패 상태를 만든다.
 //
 // ResolvedType, ObservedRevision, LastSyncedTime, ExternalRefs 는 마지막으로 성공한
-// 동기화의 기록이므로 실패해도 지우지 않는다. 특히 ResolvedType 이 지워지면
-// 삭제 시 orphanTargets 가 대상 종류를 알 수 없어 대상 리소스가 GC 로 함께 삭제된다.
+// 동기화의 기록이므로 실패해도 지우지 않는다. 실패 한 번으로 상태가 실제 대상과 어긋나지 않게 한다.
 func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv1alpha1.OctoVaultStatus {
 
 	next := prev

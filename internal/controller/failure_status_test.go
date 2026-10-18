@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
@@ -213,4 +215,36 @@ func TestOctoVault_OrphanFailure_KeepsFinalizer(t *testing.T) {
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
 	assert.NotEmpty(t, cm.OwnerReferences, "nothing was released yet")
+}
+
+// 놓아주는 사이 대상이 지워져 Update 가 NotFound 로 끝나면, 실패로 보지 않고 파이널라이저를 지운다.
+func TestOctoVault_OrphanNotFound_DoesNotBlockDeletion(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+
+				return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, obj.GetName())
+			}
+
+			return c.Update(ctx, obj, opts...)
+		},
+	})
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+	assert.True(t, apierrors.IsNotFound(cl.Get(ctx, key, &current)), "the finalizer must be removed")
 }
