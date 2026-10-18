@@ -30,9 +30,10 @@ func New[V any](max int) *Cache[V] {
 		max = DefaultEntries
 	}
 
+	// max 는 상한일 뿐이다. map 을 그 크기로 미리 잡으면 큰 값을 설정했을 때 시작하자마자 메모리를 다 쓴다.
 	return &Cache[V]{
 		max:     max,
-		entries: make(map[string]*list.Element, max),
+		entries: make(map[string]*list.Element),
 		order:   list.New(),
 	}
 }
