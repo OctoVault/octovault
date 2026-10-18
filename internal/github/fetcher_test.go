@@ -340,3 +340,31 @@ func TestFetcher_fetchContentBase64_TooLarge(t *testing.T) {
 	require.Contains(t, err.Error(), "file is 2097152 bytes")
 	require.Contains(t, err.Error(), "1MB")
 }
+
+// 파일이 아닌 경로는 1MB 메시지가 아니라 실제 원인을 알려야 한다.
+func TestFetcher_fetchContentBase64_NotAFile(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
+	f := NewFetcher(Options{HTTPClient: client})
+
+	for _, tc := range []struct {
+		name string
+		resp any
+		want string
+	}{
+		{name: "symlink", resp: contentResp{Type: "symlink", Size: 23, SHA: "x"}, want: "path is a symlink"},
+		{name: "submodule", resp: contentResp{Type: "submodule", SHA: "x"}, want: "path is a submodule"},
+		{name: "directory", resp: []contentResp{{Type: "file", Name: "a.yaml"}}, want: "path is a directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub.handler = func(r *http.Request) (*http.Response, error) {
+				return jsonResp(http.StatusOK, tc.resp), nil
+			}
+
+			_, _, err := f.fetchContentBase64(ctx, contentRequest{url: "https://api.github.com/" + tc.name, token: "tok", kind: "contents"})
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -210,10 +211,23 @@ func (f *Fetcher) fetchContentBase64(ctx context.Context, cr contentRequest) ([]
 		return nil, "", err
 	}
 
+	// 디렉터리 경로면 contents API 는 항목 배열을 돌려준다.
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+
+		return nil, "", errors.New("path is a directory, not a file")
+	}
+
 	var c contentResp
 	if err := json.Unmarshal(body, &c); err != nil {
 
 		return nil, "", err
+	}
+
+	// 저장소 밖을 가리키는 symlink, submodule 등은 type 이 file 이 아니고 내용도 없다.
+	// 아래 1MB 판정보다 먼저 걸러야 원인과 다른 메시지가 나가지 않는다.
+	if c.Type != "" && c.Type != "file" {
+
+		return nil, "", fmt.Errorf("path is a %s, not a file", c.Type)
 	}
 
 	// 1MB 를 넘는 파일은 contents API 가 내용 없이 encoding "none" 으로 돌려준다.
