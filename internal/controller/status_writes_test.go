@@ -56,6 +56,41 @@ func TestStatusWrites_Apply(t *testing.T) {
 	assert.ErrorIs(t, err, reconcileErr, "a reconcile error wins")
 }
 
+// OctoVault 도 status 기록이 실패하면 poll 주기까지 기다리지 않는다.
+func TestOctoVault_StatusWriteFailure_Retries(t *testing.T) {
+
+	for _, tc := range []struct {
+		name    string
+		err     error
+		wantErr bool
+	}{
+		{name: "conflict retries soon", err: errConflict},
+		{name: "forbidden backs off with an error", err: errForbidden, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			const path = "values/status.yaml"
+
+			rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+			rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					return tc.err
+				},
+			})
+
+			res, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}})
+			if tc.wantErr {
+
+				require.Error(t, err)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, StatusRetryInterval, res.RequeueAfter)
+		})
+	}
+}
+
 // OctoRepository 에서 conflict 가 아닌 status 기록 실패는 5초 고정 재시도가 아니라 에러 백오프로 간다.
 func TestOctoRepository_NonConflictStatusWriteFailure_ReturnsError(t *testing.T) {
 

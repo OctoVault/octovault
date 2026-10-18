@@ -187,6 +187,14 @@ type OctoVaultReconciler struct {
 
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
+	// status 기록이 실패하면 poll 주기(기본 5분)까지 기다리지 않고 곧 다시 본다(statusWrites).
+	ctx, writes := trackStatusWrites(ctx)
+
+	return writes.apply(r.reconcile(ctx, req))
+}
+
+func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
 	logger := logf.FromContext(ctx)
 
 	var ov octovaultv1alpha1.OctoVault
@@ -959,6 +967,7 @@ func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *oct
 	if err := r.Status().Update(ctx, ov); err != nil {
 
 		logf.FromContext(ctx).Error(err, "status update failed")
+		noteStatusWriteError(ctx, err)
 		return false
 	}
 
