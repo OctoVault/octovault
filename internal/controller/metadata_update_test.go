@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
@@ -117,7 +118,7 @@ func newUpdateMetaReconciler(t *testing.T, path string, fetcher *staticFetcher) 
 		},
 	}
 	ov := &octovaultv1alpha1.OctoVault{
-		ObjectMeta: metav1.ObjectMeta{Name: ovName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: ovName, Namespace: ns, UID: types.UID("ov-update-meta-uid")},
 		Spec: octovaultv1alpha1.OctoVaultSpec{
 			OctoRepositoryRef: octovaultv1alpha1.LocalObjectRef{Name: orepoName},
 			Repository:        "test-org/test-repo",

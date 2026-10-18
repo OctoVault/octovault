@@ -128,7 +128,7 @@ func TestOctoVault_TypeSwitch_CleanupFailure_KeepsNewTargetOnDelete(t *testing.T
 
 	var sec corev1.Secret
 	require.NoError(t, cl.Get(ctx, target, &sec))
-	assert.Empty(t, sec.OwnerReferences, "the new Secret must be released, not garbage-collected")
+	assertReleased(t, &sec)
 }
 
 // 정리가 실패한 상태에서 원래 종류로 되돌리면, 중간에 만든 대상이 지워져야 한다.

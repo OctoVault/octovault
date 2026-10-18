@@ -129,6 +129,11 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 		require.Eventually(t, exists, 20*time.Second, 100*time.Millisecond, "%s must be created", name)
 		uid := tc.target.GetUID()
 
+		// 소유는 owner-uid 어노테이션으로 표시하고 ownerReference 는 붙이지 않는다.
+		// ownerReference 가 있으면 foreground 삭제에서 GC 가 대상을 지운다.
+		require.Empty(t, tc.target.GetOwnerReferences(), "%s must not carry an ownerReference", name)
+		require.NotEmpty(t, tc.target.GetAnnotations()["octovault.it/owner-uid"], "%s must carry owner-uid", name)
+
 		require.NoError(t, direct.Delete(ctx, tc.target))
 		require.Eventually(t, func() bool {
 

@@ -121,7 +121,9 @@ const (
 	AnnoOVRetainedBy = "octovault.it/retained-from"
 	// AnnoOVAdopt 이 값이 "true" 인 기존 대상만 OctoVault 가 이어받는다(claimTarget).
 	AnnoOVAdopt = "octovault.it/adopt"
-	FinalizerOV = "octovault.it/finalizer"
+	// AnnoOVOwnerUID 대상을 관리하는 OctoVault 의 UID. 소유 판단에 ownerReference 대신 쓴다(target_ownership.go).
+	AnnoOVOwnerUID = "octovault.it/owner-uid"
+	FinalizerOV    = "octovault.it/finalizer"
 )
 
 func labelSafe(v string) string {
@@ -151,6 +153,7 @@ func buildSysAnnotations(ov *octovaultv1alpha1.OctoVault, dataHash string) map[s
 	return map[string]string{
 		"reconcile.octovault.it/data-hash": dataHash,
 		AnnoOVOwnerFull:                    ov.Namespace + "/" + labelSafe(ov.Name),
+		AnnoOVOwnerUID:                     string(ov.UID),
 	}
 }
 
@@ -833,9 +836,6 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 				Annotations: mergeAnnotations(sysAnnotations, userAnnotations),
 				Name:        name,
 				Namespace:   ns,
-				OwnerReferences: []metav1.OwnerReference{
-					*metav1.NewControllerRef(ov, ov.GroupVersionKind()),
-				},
 			},
 			Data: data,
 		}
@@ -852,10 +852,13 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
 	}
 
+	// 이전 버전이 붙인 ownerReference 를 뗀다. 남겨 두면 foreground 삭제에서 GC 가 대상을 지운다.
+	migrated := dropLegacyOwnerRef(&cm.ObjectMeta, ov.UID)
+
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if !adopted &&
+	if !adopted && !migrated &&
 		reflect.DeepEqual(cm.Labels, desiredLabels) &&
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(cm.Data, data) &&
@@ -892,9 +895,6 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 				Annotations: mergeAnnotations(sysAnnotations, userAnnotations),
 				Name:        name,
 				Namespace:   ns,
-				OwnerReferences: []metav1.OwnerReference{
-					*metav1.NewControllerRef(ov, ov.GroupVersionKind()),
-				},
 			},
 			Data: data,
 			Type: corev1.SecretTypeOpaque,
@@ -912,10 +912,13 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
 	}
 
+	// 이전 버전이 붙인 ownerReference 를 뗀다. 남겨 두면 foreground 삭제에서 GC 가 대상을 지운다.
+	migrated := dropLegacyOwnerRef(&sec.ObjectMeta, ov.UID)
+
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if !adopted &&
+	if !adopted && !migrated &&
 		reflect.DeepEqual(sec.Labels, desiredLabels) &&
 		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(sec.Data, data) {
@@ -930,33 +933,6 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	sec.Data = data
 
 	return r.Update(ctx, &sec)
-}
-
-// claimTarget 기존 대상을 이 OctoVault 가 관리해도 되는지 판단한다.
-//
-// 이미 controller 이면 그대로 쓴다. controller 가 없고 octovault.it/adopt: "true" 가 붙어 있으면
-// controller ref 를 붙여 이어받는다(adopted=true). 삭제 후 재설치(Helm/Argo)처럼 남겨진 대상을 다시
-// 관리하려면 이 어노테이션을 한 번 붙이면 된다. 이어받으면서 대상의 어노테이션은 values.yaml 기준으로
-// 다시 쓰이므로 adopt 는 한 번만 쓰인다.
-//
-// retained-from 이나 owner 어노테이션 같은 이름 기반 흔적만으로는 이어받지 않는다. 그 흔적은 컨트롤러가
-// 직접 남기므로, 그것만 믿으면 OctoVault 생성 권한만 있는 사용자가 지워진 OctoVault 와 같은 이름으로
-// 만들어, 수정 권한이 없는 Secret 을 덮어쓸 수 있다. adopt 는 그 대상을 수정할 수 있는 주체만 붙일 수
-// 있고, values.yaml 로는 넣을 수 없다(isReservedKey).
-func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
-	if metav1.IsControlledBy(obj, ov) {
-
-		return false, true
-	}
-
-	if metav1.GetControllerOf(obj) != nil || obj.GetAnnotations()[AnnoOVAdopt] != "true" {
-
-		return false, false
-	}
-
-	obj.OwnerReferences = append(obj.OwnerReferences, *metav1.NewControllerRef(ov, ov.GroupVersionKind()))
-
-	return true, true
 }
 
 // deleteStaleTarget 이전 종류(kind)의 대상을 지운다. 이 OctoVault 가 소유한 것만 지운다.
@@ -982,7 +958,7 @@ func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovau
 				return client.IgnoreNotFound(err)
 			}
 
-			if !metav1.IsControlledBy(secretMeta, ov) {
+			if !ownedBy(secretMeta, ov) {
 
 				return nil
 			}
@@ -1000,7 +976,7 @@ func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovau
 		return client.IgnoreNotFound(err)
 	}
 
-	if !metav1.IsControlledBy(obj, ov) {
+	if !ownedBy(obj, ov) {
 
 		return nil
 	}
@@ -1022,41 +998,9 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	// 거부한다). spec.targetNamespace 를 나중에 다른 값으로 바꿔도 실제 대상은 원래 네임스페이스에 있다.
 	targetNS := ov.Namespace
 
-	// remove ownerRef가 실제로 뭔가 바꿨는지 반환
+	// releaseTarget 이 실제로 뭔가 바꿨는지(놓아줄 소유 표시가 있었는지) 반환한다.
 	removeOwner := func(obj metav1.Object) bool {
-
-		owners := obj.GetOwnerReferences()
-		if len(owners) == 0 {
-
-			return false
-		}
-
-		changed := false
-		kept := make([]metav1.OwnerReference, 0, len(owners))
-		for _, o := range owners {
-			if o.UID == ov.UID {
-
-				changed = true
-				continue
-			}
-
-			kept = append(kept, o)
-		}
-
-		if changed {
-
-			obj.SetOwnerReferences(kept)
-			a := obj.GetAnnotations()
-			if a == nil {
-
-				a = map[string]string{}
-			}
-
-			a[AnnoOVRetainedBy] = ov.Namespace + "/" + ov.Name
-			obj.SetAnnotations(a)
-		}
-
-		return changed
+		return releaseTarget(obj, ov)
 	}
 
 	var firstErr error
@@ -1076,10 +1020,10 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	}
 
 	// 현재 spec.targetName 만 보면 안 된다. targetName 을 바꾸면 이전 이름의 대상도 여전히 이
-	// OctoVault 소유로 남아 있어, 그대로 지우면 GC 가 함께 삭제한다. 그래서 생성 시 붙인 owner
-	// 라벨로 이 OctoVault 가 만든 대상을 모두 찾는다. 라벨이 없는 오래된 대상을 위해 현재 이름도
-	// 직접 확인한다. ResolvedType 과 무관하게 두 종류를 모두 본다(상태가 실제와 어긋날 수 있다).
-	// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 남의 리소스에는 영향이 없다.
+	// OctoVault 소유로 남아 있다(이전 버전이 붙인 ownerReference 가 있으면 GC 가 함께 지운다).
+	// 그래서 생성 시 붙인 owner 라벨로 이 OctoVault 가 만든 대상을 모두 찾는다. 라벨이 없는 오래된
+	// 대상을 위해 현재 이름도 직접 확인한다. ResolvedType 과 무관하게 두 종류를 모두 본다.
+	// releaseTarget 은 이 OctoVault 의 소유 표시만 지우므로 남의 리소스에는 영향이 없다.
 	owned := client.MatchingLabels{LabelOVOwnerNS: ov.Namespace, LabelOVOwnerName: labelSafe(ov.Name)}
 	current := types.NamespacedName{Namespace: targetNS, Name: ov.Spec.TargetName}
 
@@ -1351,7 +1295,8 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// 대상이 지워지거나 컨트롤러가 책임지는 부분이 손으로 바뀌면 poll 주기를 기다리지 않고 바로
 	// 되돌린다. 어떤 변경에 반응하는지는 targetEventFilter 를 본다.
 	// 컨트롤러 자신의 갱신도 이벤트가 되지만, 다음 reconcile 에서 바뀐 것이 없어 끝난다.
-	b = b.Owns(&corev1.ConfigMap{}, builder.WithPredicates(targetEventFilter[client.Object]()))
+	b = b.Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.mapTargetToOctoVault),
+		builder.WithPredicates(targetEventFilter[client.Object]()))
 
 	if r.TargetSecrets != nil {
 
@@ -1359,8 +1304,9 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
 
 		b = b.WatchesRawSource(source.Kind(r.TargetSecrets, secretMeta,
-			handler.TypedEnqueueRequestForOwner[*metav1.PartialObjectMetadata](
-				mgr.GetScheme(), mgr.GetRESTMapper(), &octovaultv1alpha1.OctoVault{}, handler.OnlyControllerOwner()),
+			handler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj *metav1.PartialObjectMetadata) []reconcile.Request {
+				return r.mapTargetToOctoVault(ctx, obj)
+			}),
 			targetEventFilter[*metav1.PartialObjectMetadata]()))
 	}
 

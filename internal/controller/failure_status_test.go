@@ -89,7 +89,7 @@ func TestOctoVault_DeleteAfterFailure_RetainsTarget(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
-	assert.Empty(t, cm.OwnerReferences, "ownerRef must be removed so GC keeps the target")
+	assertReleased(t, &cm)
 	assert.Equal(t, ov.Namespace+"/"+ov.Name, cm.Annotations[AnnoOVRetainedBy])
 }
 
@@ -117,7 +117,7 @@ func TestOctoVault_DeleteWithEmptyResolvedType_RetainsTarget(t *testing.T) {
 
 	var sec corev1.Secret
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
-	assert.Empty(t, sec.OwnerReferences, "ownerRef must be removed so GC keeps the target")
+	assertReleased(t, &sec)
 }
 
 func TestOctoVault_Delete_ReleasesTargetsOfBothKinds(t *testing.T) {
@@ -145,7 +145,7 @@ func TestOctoVault_Delete_ReleasesTargetsOfBothKinds(t *testing.T) {
 
 	var sec corev1.Secret
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
-	assert.Empty(t, sec.OwnerReferences, "the Secret must be released even though status says ConfigMap")
+	assertReleased(t, &sec)
 }
 
 // targetName 을 바꾼 뒤 지워도 이전 이름의 대상까지 남아야 한다(GC 되면 안 된다).
@@ -177,7 +177,7 @@ func TestOctoVault_DeleteAfterTargetRename_RetainsBothTargets(t *testing.T) {
 	for _, name := range []string{oldName, oldName + "-v2"} {
 		var cm corev1.ConfigMap
 		require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: name, Namespace: ov.Namespace}, &cm), name)
-		assert.Empty(t, cm.OwnerReferences, "%s must be released so GC keeps it", name)
+		assertReleased(t, &cm)
 	}
 }
 
@@ -226,7 +226,7 @@ func TestOctoVault_OrphanFailure_KeepsFinalizer(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
-	assert.NotEmpty(t, cm.OwnerReferences, "nothing was released yet")
+	assert.NotEmpty(t, cm.Annotations[AnnoOVOwnerUID], "nothing was released yet")
 }
 
 // 놓아주는 사이 대상이 지워져 Update 가 NotFound 로 끝나면, 실패로 보지 않고 파이널라이저를 지운다.
@@ -288,5 +288,15 @@ func TestOctoVault_DeleteAfterTargetNamespaceChange_ReleasesOriginalTarget(t *te
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
-	assert.Empty(t, cm.OwnerReferences, "the original target must be released")
+	assertReleased(t, &cm)
+}
+
+// assertReleased 삭제된 OctoVault 가 대상을 놓아줬는지 본다. 소유 표시(owner-uid, 이전 버전의
+// ownerReference)가 없어야 GC 나 다른 OctoVault 의 판단에서 자유롭고, retained-from 이 남아야 한다.
+func assertReleased(t *testing.T, obj client.Object) {
+	t.Helper()
+
+	assert.Empty(t, obj.GetOwnerReferences(), "%s: no ownerReference may remain", obj.GetName())
+	assert.NotContains(t, obj.GetAnnotations(), AnnoOVOwnerUID, "%s: owner-uid must be removed", obj.GetName())
+	assert.NotEmpty(t, obj.GetAnnotations()[AnnoOVRetainedBy], "%s: retained-from must be set", obj.GetName())
 }
