@@ -266,7 +266,7 @@ controller:
   env:
     GIT_CRED_TTL: "10m"  # PAT verification cache TTL / OctoRepository recheck period
     GIT_API_URL: ""      # default https://api.github.com
-    GIT_REF: ""          # global default ref (fallback)
+    GIT_REF: "main"      # global default ref (fallback); set "" to use each repository's default branch
     GIT_REVISION_FROM_COMMIT: "false"  # true adds one /commits request per poll
     AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m

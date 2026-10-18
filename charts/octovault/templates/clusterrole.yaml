@@ -31,4 +31,29 @@ rules:
     resources: ["customresourcedefinitions"]
     resourceNames: ["octorepositories.octovault.it"]
     verbs: ["get"]
+
+  {{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+  # Secure metrics authenticate and authorize each scrape
+  # (config/rbac/metrics_auth_role.yaml).
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  {{- end }}
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+---
+# Bind this to the scraper's ServiceAccount (e.g. Prometheus) so it may read /metrics
+# (config/rbac/metrics_reader_role.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "octovault.fullname" . }}-metrics-reader
+  labels:
+    {{- include "octovault.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+{{- end }}
 {{- end }}
