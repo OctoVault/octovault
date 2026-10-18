@@ -38,19 +38,20 @@ func TestCache_HitMissAndExpiry(t *testing.T) {
 	require.Equal(t, "v2", v, "reloaded after TTL")
 }
 
-func TestCache_IsBounded(t *testing.T) {
+func TestCache_ExpiredEntryIsDroppedOnLookup(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Unix(1_700_000_000, 0)
-	c := New(time.Minute, WithMaxEntries[int](3), WithClock[int](func() time.Time { return now }))
+	c := New(time.Minute, WithClock[string](func() time.Time { return now }))
 
-	for i := range 10 {
-		now = now.Add(time.Second)
-		_, err := c.Get(ctx, strconv.Itoa(i), func(context.Context) (int, error) { return i, nil })
-		require.NoError(t, err)
-	}
+	_, err := c.Get(ctx, "k", func(context.Context) (string, error) { return "secret", nil })
+	require.NoError(t, err)
+	require.Equal(t, 1, c.Len())
 
-	require.Equal(t, 3, c.Len())
+	now = now.Add(2 * time.Minute)
+	_, err = c.Get(ctx, "k", func(context.Context) (string, error) { return "", errors.New("gone") })
+	require.Error(t, err)
+	require.Equal(t, 0, c.Len(), "an expired value must not stay in memory")
 }
 
 func TestCache_ErrorsAreNotCached(t *testing.T) {
@@ -66,6 +67,31 @@ func TestCache_ErrorsAreNotCached(t *testing.T) {
 	require.Equal(t, "ok", v)
 }
 
+func TestCache_IsBoundedAndEvictsLeastRecentlyUsed(t *testing.T) {
+
+	ctx := context.Background()
+	c := New(time.Minute, WithMaxEntries[int](3))
+	put := func(k string, v int) {
+		_, err := c.Get(ctx, k, func(context.Context) (int, error) { return v, nil })
+		require.NoError(t, err)
+	}
+
+	put("a", 1)
+	put("b", 2)
+	put("c", 3)
+	put("a", -1) // 적중: a 가 가장 최근에 쓰인 항목이 된다
+	put("d", 4)  // b 가 가장 오래 쓰이지 않았으므로 축출된다
+
+	require.Equal(t, 3, c.Len())
+
+	reloaded := false
+	_, _ = c.Get(ctx, "b", func(context.Context) (int, error) { reloaded = true; return 2, nil })
+	require.True(t, reloaded, "b must have been evicted")
+
+	v, _ := c.Get(ctx, "a", func(context.Context) (int, error) { return -1, nil })
+	require.Equal(t, 1, v, "a must have survived")
+}
+
 func TestCache_ConcurrentMissesLoadOnce(t *testing.T) {
 
 	ctx := context.Background()
@@ -74,21 +100,19 @@ func TestCache_ConcurrentMissesLoadOnce(t *testing.T) {
 	var loads atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	load := func(context.Context) (string, error) {
-		if loads.Add(1) == 1 {
-
-			close(started)
-		}
-
-		<-release
-
-		return "v", nil
-	}
-
 	const callers = 20
 	results := make(chan error, callers)
 	get := func() {
-		v, err := c.Get(ctx, "k", load)
+		v, err := c.Get(ctx, "k", func(context.Context) (string, error) {
+			if loads.Add(1) == 1 {
+
+				close(started)
+			}
+
+			<-release
+
+			return "v", nil
+		})
 		if err == nil && v != "v" {
 
 			err = errors.New("unexpected value " + v)

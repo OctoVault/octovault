@@ -6,15 +6,16 @@ package ttlcache
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/octovault/octovault/internal/lru"
 )
 
 const (
-	// DefaultMaxEntries 기본 최대 항목 수.
-	DefaultMaxEntries = 1024
+	// DefaultMaxEntries 기본 최대 항목 수. 가득 차면 가장 오래 쓰이지 않은 항목부터 지운다.
+	DefaultMaxEntries = lru.DefaultEntries
 
 	// DefaultLoadTimeout 한 번의 load 에 허용하는 시간.
 	DefaultLoadTimeout = 30 * time.Second
@@ -26,11 +27,10 @@ type entry[V any] struct {
 }
 
 type Cache[V any] struct {
-	mu          sync.Mutex
 	ttl         time.Duration
 	max         int
 	loadTimeout time.Duration
-	entries     map[string]entry[V]
+	entries     *lru.Cache[entry[V]]
 	group       singleflight.Group
 	now         func() time.Time
 }
@@ -41,10 +41,8 @@ type Option[V any] func(*Cache[V])
 // WithMaxEntries 최대 항목 수. 0 이하면 DefaultMaxEntries.
 func WithMaxEntries[V any](n int) Option[V] {
 	return func(c *Cache[V]) {
-		if n > 0 {
 
-			c.max = n
-		}
+		c.max = n
 	}
 }
 
@@ -70,14 +68,14 @@ func New[V any](ttl time.Duration, opts ...Option[V]) *Cache[V] {
 
 	c := &Cache[V]{
 		ttl:         ttl,
-		max:         DefaultMaxEntries,
 		loadTimeout: DefaultLoadTimeout,
-		entries:     make(map[string]entry[V]),
 		now:         time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
 	}
+
+	c.entries = lru.New[entry[V]](c.max)
 
 	return c
 }
@@ -107,7 +105,7 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 		v, err := load(lctx)
 		if err == nil {
 
-			c.store(key, v)
+			c.entries.Put(key, entry[V]{value: v, exp: c.now().Add(c.ttl)})
 		}
 
 		return v, err
@@ -123,63 +121,26 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 	}
 }
 
-// Len 현재 항목 수(만료됐지만 아직 정리되지 않은 항목 포함).
+// Len 현재 항목 수.
 func (c *Cache[V]) Len() int {
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	return len(c.entries)
+	return c.entries.Len()
 }
 
+// lookup 만료된 항목은 발견 즉시 지운다. 더 이상 참조하지 않는 복호화된 값이 메모리에 남지 않게 한다.
 func (c *Cache[V]) lookup(key string) (V, bool) {
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	var zero V
+	e, ok := c.entries.Get(key)
+	if !ok {
 
-	e, ok := c.entries[key]
-	if !ok || !e.exp.After(c.now()) {
+		return zero, false
+	}
 
-		var zero V
+	if !e.exp.After(c.now()) {
+
+		c.entries.Drop(key)
 		return zero, false
 	}
 
 	return e.value, true
-}
-
-func (c *Cache[V]) store(key string, v V) {
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := c.now()
-	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.max {
-		c.evictLocked(now)
-	}
-
-	c.entries[key] = entry[V]{value: v, exp: now.Add(c.ttl)}
-}
-
-// evictLocked 만료된 항목을 모두 지우고, 그래도 가득 차 있으면 가장 먼저 만료될 항목 하나를 지운다.
-func (c *Cache[V]) evictLocked(now time.Time) {
-
-	var oldestKey string
-	var oldestExp time.Time
-	for k, e := range c.entries {
-		if !e.exp.After(now) {
-
-			delete(c.entries, k)
-			continue
-		}
-
-		if oldestKey == "" || e.exp.Before(oldestExp) {
-
-			oldestKey, oldestExp = k, e.exp
-		}
-	}
-
-	if len(c.entries) >= c.max && oldestKey != "" {
-
-		delete(c.entries, oldestKey)
-	}
 }
