@@ -47,8 +47,16 @@ func TestExtract_KeepsNumberPrecision(t *testing.T) {
 	got, err = Extract(doc, "nested")
 	require.NoError(t, err)
 	require.JSONEq(t, `{"n":9007199254740993,"f":1.50}`, string(got))
+	// JSONEq 는 1.50 과 1.5 를 같게 보므로 원문 표기는 따로 확인한다.
 	require.Contains(t, string(got), "9007199254740993")
+	require.Contains(t, string(got), "1.50")
 
-	_, err = Extract([]byte(`{"a":"b"} trailing`), "a")
-	require.ErrorContains(t, err, "parse json")
+	got, err = Extract(doc, "nested.f")
+	require.NoError(t, err)
+	require.Equal(t, "1.50", string(got))
+
+	for _, trailing := range []string{`{"a":"b"} trailing`, `{"a":"b"} {"a":"c"}`} {
+		_, err = Extract([]byte(trailing), "a")
+		require.ErrorContains(t, err, "parse json", trailing)
+	}
 }
