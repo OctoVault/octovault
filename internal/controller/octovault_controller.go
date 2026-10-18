@@ -51,7 +51,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -327,19 +326,18 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
-	// 5) metadata.type 이 바뀌었거나 이전 정리가 실패했으면, 방금 적용한 것과 다른 종류의 대상을 지운다.
+	// 5) 방금 적용한 것과 다른 종류의 대상이 이 OctoVault 소유로 남아 있으면 지운다(metadata.type 전환).
 	//
-	// 실패해도 ResolvedType 은 실제로 적용한 종류로 기록한다. 이전 종류로 남겨 두면 삭제 시
-	// 새 대상이 GC 될 수 있다(orphanTargets 는 두 종류를 모두 풀지만 상태도 사실과 맞아야 한다).
-	// 재시도는 Ready reason 으로 판단하므로, 정리 전에 원래 종류로 되돌려도 남은 대상이 지워진다.
-	if r.staleCleanupNeeded(&ov, resolvedType) {
-		if err := r.deleteStaleTarget(ctx, &ov, otherOutputKind(resolvedType)); err != nil {
+	// "정리가 필요하다"는 기록을 상태에 따로 두지 않고 매번 확인한다. Ready reason 같은 기록은
+	// 사이에 끼는 다른 실패(FetchFailed 등)에 덮어써져 재시도가 사라질 수 있다. 확인은 캐시에서
+	// 하므로(ConfigMap 은 기본 캐시, Secret 은 메타데이터 캐시) 남은 대상이 없으면 API 호출이 없다.
+	// 실패해도 ResolvedType 은 실제로 적용한 종류로 기록해 상태가 사실과 어긋나지 않게 한다.
+	if err := r.deleteStaleTarget(ctx, &ov, otherOutputKind(resolvedType)); err != nil {
 
-			r.updateStatusIfChanged(ctx, &ov, fail(r.syncedStatus(&ov, applied), ReasonStaleTargetCleanupFailed,
-				fmt.Sprintf("applied %s but failed to delete the previous %s %s/%s: %v",
-					resolvedType, otherOutputKind(resolvedType), targetNS, ov.Spec.TargetName, err)))
-			return ctrl.Result{RequeueAfter: poll}, nil
-		}
+		r.updateStatusIfChanged(ctx, &ov, fail(r.syncedStatus(&ov, applied), ReasonStaleTargetCleanupFailed,
+			fmt.Sprintf("applied %s but failed to delete the previous %s %s/%s: %v",
+				resolvedType, otherOutputKind(resolvedType), targetNS, ov.Spec.TargetName, err)))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	// 6) status
@@ -687,18 +685,6 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 // ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
 const ReasonStaleTargetCleanupFailed = "StaleTargetCleanupFailed"
 
-// staleCleanupNeeded 종류가 바뀌었거나, 지난번 정리가 실패한 채로 남아 있으면 true.
-func (r *OctoVaultReconciler) staleCleanupNeeded(ov *octovaultv1alpha1.OctoVault, resolvedType string) bool {
-	if prev := ov.Status.ResolvedType; prev != "" && prev != resolvedType {
-
-		return true
-	}
-
-	ready := apimeta.FindStatusCondition(ov.Status.Conditions, CondReady)
-
-	return ready != nil && ready.Reason == ReasonStaleTargetCleanupFailed
-}
-
 func otherOutputKind(kind string) string {
 	if kind == string(octovaultv1alpha1.OutputConfigMap) {
 
@@ -904,17 +890,37 @@ func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopt
 // deleteStaleTarget 이전 종류(kind)의 대상을 지운다. 이 OctoVault 가 소유한 것만 지운다.
 func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovaultv1alpha1.OctoVault, kind string) error {
 
+	key := types.NamespacedName{Namespace: ov.Namespace, Name: ov.Spec.TargetName}
+
 	var obj client.Object
 	switch kind {
 	case string(octovaultv1alpha1.OutputConfigMap):
 		obj = &corev1.ConfigMap{}
 	case string(octovaultv1alpha1.OutputSecret):
+		// Secret 조회는 캐시를 거치지 않으므로, 매 poll 마다 API 를 부르지 않도록 메타데이터 캐시로
+		// 먼저 존재와 소유를 확인한다. 지우는 데에는 이름과 UID 만 있으면 된다.
+		if r.TargetSecrets != nil {
+
+			secretMeta := &metav1.PartialObjectMetadata{}
+			secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+			if err := r.TargetSecrets.Get(ctx, key, secretMeta); err != nil {
+
+				return client.IgnoreNotFound(err)
+			}
+
+			if !metav1.IsControlledBy(secretMeta, ov) {
+
+				return nil
+			}
+
+			return r.deleteWithUID(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}, secretMeta.UID)
+		}
+
 		obj = &corev1.Secret{}
 	default:
 		return nil
 	}
 
-	key := types.NamespacedName{Namespace: ov.Namespace, Name: ov.Spec.TargetName}
 	if err := r.Get(ctx, key, obj); err != nil {
 
 		return client.IgnoreNotFound(err)
@@ -925,8 +931,12 @@ func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovau
 		return nil
 	}
 
-	// 조회와 삭제 사이에 같은 이름으로 다시 만들어진 객체를 지우지 않도록 UID 를 고정한다.
-	uid := obj.GetUID()
+	return r.deleteWithUID(ctx, obj, obj.GetUID())
+}
+
+// deleteWithUID 조회와 삭제 사이에 같은 이름으로 다시 만들어진 객체를 지우지 않도록 UID 를 고정해 지운다.
+func (r *OctoVaultReconciler) deleteWithUID(ctx context.Context, obj client.Object, uid types.UID) error {
+
 	err := r.Delete(ctx, obj, client.Preconditions{UID: &uid})
 
 	return client.IgnoreNotFound(err)

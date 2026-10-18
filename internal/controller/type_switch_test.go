@@ -164,3 +164,43 @@ func TestOctoVault_TypeSwitch_RevertBeforeCleanup_DeletesIntermediateTarget(t *t
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
 	assert.Equal(t, "ConfigMap", updated.Status.ResolvedType)
 }
+
+// 정리 실패 뒤 다른 실패(여기선 InvalidType)로 Ready reason 이 덮어써져도,
+// 다음 성공한 동기화에서 남은 대상이 지워져야 한다.
+func TestOctoVault_TypeSwitch_CleanupRetrySurvivesOtherFailures(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/switch.yaml"
+
+	fetcher := &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+	failing := true
+	failDeletes(t, rec, cl, &corev1.ConfigMap{}, &failing)
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	target := client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}
+	reconcileOnce := func() octovaultv1alpha1.OctoVault {
+		_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+		require.NoError(t, err)
+
+		var o octovaultv1alpha1.OctoVault
+		require.NoError(t, cl.Get(ctx, key, &o))
+
+		return o
+	}
+
+	reconcileOnce()
+
+	fetcher.files[path] = sampleSecretYAML
+	require.Equal(t, ReasonStaleTargetCleanupFailed, reconcileOnce().Status.Conditions[0].Reason)
+
+	fetcher.files[path] = invalidTypeYAML
+	require.Equal(t, "InvalidType", reconcileOnce().Status.Conditions[0].Reason, "another failure overwrites the reason")
+
+	failing = false
+	fetcher.files[path] = sampleSecretYAML
+	updated := reconcileOnce()
+
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+	err := cl.Get(ctx, target, &corev1.ConfigMap{})
+	assert.True(t, err != nil && client.IgnoreNotFound(err) == nil, "the stale ConfigMap must still be cleaned up")
+}

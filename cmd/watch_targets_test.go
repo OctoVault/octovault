@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,6 +23,7 @@ import (
 )
 
 type mapFetcher struct {
+	mu    sync.Mutex
 	files map[string][]byte
 	calls atomic.Int32
 }
@@ -28,8 +31,18 @@ type mapFetcher struct {
 func (m *mapFetcher) Fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
 
 	m.calls.Add(1)
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	return m.files[path], nil, "rev1", nil
+}
+
+func (m *mapFetcher) set(path string, b []byte) {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.files[path] = b
 }
 
 // 대상 ConfigMap/Secret 이 지워지면 poll 주기(여기선 60m)를 기다리지 않고 바로 다시 만들어져야 한다.
@@ -143,4 +156,20 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 		return direct.Get(ctx, cmKey, &cm) == nil && cm.Data["a"] == "b"
 	}, 20*time.Second, 100*time.Millisecond,
 		"a hand edit to managed data must be reverted without waiting for the poll interval")
+
+	// Secret 에서 ConfigMap 으로 바꾸면, 남은 Secret 은 메타데이터 캐시로 확인해 지워진다.
+	secKey := client.ObjectKey{Name: "out-sec", Namespace: "default"}
+	fetcher.set("sec.yaml", []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: a\n      value: b\n"))
+
+	var ov octovaultv1alpha1.OctoVault
+	require.NoError(t, direct.Get(ctx, secKey, &ov))
+	ov.Spec.PollInterval = "61m" // spec 을 바꿔 바로 reconcile 하게 한다
+	require.NoError(t, direct.Update(ctx, &ov))
+
+	require.Eventually(t, func() bool {
+		secretGone := apierrors.IsNotFound(direct.Get(ctx, secKey, &corev1.Secret{}))
+		configMapThere := direct.Get(ctx, secKey, &corev1.ConfigMap{}) == nil
+
+		return secretGone && configMapThere
+	}, 20*time.Second, 100*time.Millisecond, "the previous Secret must be deleted after switching to ConfigMap")
 }
