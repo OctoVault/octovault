@@ -242,3 +242,18 @@ func TestCache_ExpiredDropKeepsFreshlyStoredValue(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "fresh", v)
 }
+
+func TestCache_EvictHookCountsEvictions(t *testing.T) {
+
+	ctx := context.Background()
+	evicted := 0
+	c := New(time.Minute, WithMaxEntries[int](3), WithEvictHook[int](func(n int) { evicted += n }))
+
+	for i := range 5 {
+		_, err := c.Get(ctx, strconv.Itoa(i), func(context.Context) (int, error) { return i, nil })
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 3, c.Len())
+	require.Equal(t, 2, evicted)
+}

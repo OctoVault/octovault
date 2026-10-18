@@ -33,6 +33,7 @@ type Cache[V any] struct {
 	entries     *lru.Cache[entry[V]]
 	group       singleflight.Group
 	now         func() time.Time
+	onEvict     func(n int)
 }
 
 // Option Cache 생성 옵션.
@@ -53,6 +54,14 @@ func WithLoadTimeout[V any](d time.Duration) Option[V] {
 
 			c.loadTimeout = d
 		}
+	}
+}
+
+// WithEvictHook 크기 한도 때문에 항목이 밀려날 때마다 밀려난 수와 함께 호출된다(지표용).
+func WithEvictHook[V any](fn func(n int)) Option[V] {
+	return func(c *Cache[V]) {
+
+		c.onEvict = fn
 	}
 }
 
@@ -105,7 +114,7 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 		v, err := load(lctx)
 		if err == nil {
 
-			c.entries.Put(key, entry[V]{value: v, exp: c.now().Add(c.ttl)})
+			c.store(key, v)
 		}
 
 		return v, err
@@ -118,6 +127,13 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 	case res := <-ch:
 		v, _ := res.Val.(V)
 		return v, res.Err
+	}
+}
+
+func (c *Cache[V]) store(key string, v V) {
+	if n := c.entries.Put(key, entry[V]{value: v, exp: c.now().Add(c.ttl)}); n > 0 && c.onEvict != nil {
+
+		c.onEvict(n)
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 
 	awsps "github.com/octovault/octovault/internal/aws/parameter_store"
 	awssm "github.com/octovault/octovault/internal/aws/secret_manager"
+	"github.com/octovault/octovault/internal/aws/ttlcache"
 	"github.com/octovault/octovault/internal/github"
 
 	corev1 "k8s.io/api/core/v1"
@@ -340,15 +341,18 @@ func main() {
 	region := os.Getenv("AWS_REGION")
 	AwsSMTtl := controller.ParseDurationOr(os.Getenv("AWS_SM_TTL"), time.Minute)
 	AwsPSTtl := controller.ParseDurationOr(os.Getenv("AWS_PS_TTL"), time.Minute)
+	// 서로 다른 AWS 참조(Parameter Store 는 복호화 여부별로 따로) 수가 이보다 많으면 캐시가 계속
+	// 밀려나 적중률이 떨어진다. octovault_aws_cache_evictions_total 이 늘면 올린다.
+	awsCacheMax := positiveIntEnv("AWS_CACHE_MAX_ENTRIES", ttlcache.DefaultMaxEntries)
 
-	awsSMProv, err := awssm.New(context.Background(), region, AwsSMTtl)
+	awsSMProv, err := awssm.New(context.Background(), region, awssm.CacheOptions{TTL: AwsSMTtl, MaxEntries: awsCacheMax})
 	if err != nil {
 
 		setupLog.Error(err, "AWS Secrets Manager provider init failed; AwsSecretManager type will be unavailable")
 		awsSMProv = nil
 	}
 
-	awsPSProv, err := awsps.New(context.Background(), region, AwsPSTtl)
+	awsPSProv, err := awsps.New(context.Background(), region, awsps.CacheOptions{TTL: AwsPSTtl, MaxEntries: awsCacheMax})
 	if err != nil {
 
 		setupLog.Error(err, "AWS Parameter Store provider init failed; AwsParameterStore type will be unavailable")
@@ -487,6 +491,16 @@ func newTargetSecretCache(mgr ctrl.Manager) (cache.Cache, error) {
 	}
 
 	return c, nil
+}
+
+// positiveIntEnv 환경 변수가 양의 정수면 그 값, 아니면 def.
+func positiveIntEnv(key string, def int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && n > 0 {
+
+		return n
+	}
+
+	return def
 }
 
 // resolveWorkers: env(>0) flag(>0) > def

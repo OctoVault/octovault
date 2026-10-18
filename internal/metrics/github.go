@@ -46,6 +46,13 @@ var (
 		Help: "GitHub requests rejected because a rate limit was exhausted.",
 	}, []string{"kind"})
 
+	// AWSCacheEvictionsTotal AWS 조회 캐시가 크기 한도 때문에 밀어낸 항목 수.
+	// 계속 늘어나면 서로 다른 참조 수가 한도(AWS_CACHE_MAX_ENTRIES)를 넘었다는 뜻이다.
+	AWSCacheEvictionsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "octovault_aws_cache_evictions_total",
+		Help: "Entries evicted from an AWS lookup cache because it was full.",
+	}, []string{"provider"})
+
 	// CredentialCheckCacheTotal OctoRepository 자격증명 검증 캐시의 hit/miss
 	CredentialCheckCacheTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "octovault_github_credential_check_cache_total",
@@ -62,5 +69,6 @@ func init() {
 		ConditionalHitsTotal,
 		RateLimitedTotal,
 		CredentialCheckCacheTotal,
+		AWSCacheEvictionsTotal,
 	)
 }

@@ -284,6 +284,7 @@ controller:
     AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
     AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
+    AWS_CACHE_MAX_ENTRIES: "1024"  # entries per AWS cache. Default 1024
 ```
 ### Upgrading
 
@@ -349,6 +350,7 @@ kubectl apply -f config/crd/bases/      # CRDs
 | `AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
 | `AWS_SM_TTL`             | AWS SM cache TTL (Go duration)                                | `1m`                     |
 | `AWS_PS_TTL`             | AWS Parameter Store cache TTL (Go duration)                   | `1m`                     |
+| `AWS_CACHE_MAX_ENTRIES`  | Entries per AWS lookup cache (one per provider). Each distinct secret/parameter is one entry; Parameter Store counts each `withDecryption` setting separately. Raise it if `octovault_aws_cache_evictions_total` keeps growing. | `1024` |
 
 ---
 

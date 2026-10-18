@@ -9,6 +9,7 @@ import (
 
 	"github.com/octovault/octovault/internal/aws/jsonkey"
 	"github.com/octovault/octovault/internal/aws/ttlcache"
+	ovmetrics "github.com/octovault/octovault/internal/metrics"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -34,7 +35,16 @@ type cacheEntry struct {
 	meta  Meta
 }
 
-func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*config.LoadOptions) error) (*Provider, error) {
+// CacheOptions 조회 결과 캐시 설정.
+type CacheOptions struct {
+	// TTL 0 이하면 1분.
+	TTL time.Duration
+
+	// MaxEntries 0 이하면 ttlcache.DefaultMaxEntries.
+	MaxEntries int
+}
+
+func New(ctx context.Context, region string, cache CacheOptions, optFns ...func(*config.LoadOptions) error) (*Provider, error) {
 
 	var opts []func(*config.LoadOptions) error
 	opts = append(opts, optFns...)
@@ -50,6 +60,7 @@ func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
+	ttl := cache.TTL
 	if ttl <= 0 {
 
 		ttl = time.Minute
@@ -57,7 +68,11 @@ func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*
 
 	return &Provider{
 		client: ssm.NewFromConfig(cfg),
-		cache:  ttlcache.New[cacheEntry](ttl),
+		cache: ttlcache.New(ttl,
+			ttlcache.WithMaxEntries[cacheEntry](cache.MaxEntries),
+			ttlcache.WithEvictHook[cacheEntry](func(n int) {
+				ovmetrics.AWSCacheEvictionsTotal.WithLabelValues("AwsParameterStore").Add(float64(n))
+			})),
 	}, nil
 }
 

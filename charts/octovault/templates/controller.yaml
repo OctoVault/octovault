@@ -61,6 +61,8 @@ spec:
               value: "{{ .Values.controller.env.AWS_SM_TTL }}"
             - name: AWS_PS_TTL
               value: "{{ .Values.controller.env.AWS_PS_TTL }}"
+            - name: AWS_CACHE_MAX_ENTRIES
+              value: "{{ .Values.controller.env.AWS_CACHE_MAX_ENTRIES }}"
             {{- range .Values.controller.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}
