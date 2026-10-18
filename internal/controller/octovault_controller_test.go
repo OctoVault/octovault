@@ -94,8 +94,8 @@ func TestOctoVault_Reconcile_ConfigMap_Success(t *testing.T) {
 			Name:      credName,
 			Namespace: ns,
 		},
-		StringData: map[string]string{
-			"password": "dummy",
+		Data: map[string][]byte{
+			"password": []byte("dummy"),
 		},
 	}
 
@@ -177,8 +177,8 @@ func TestOctoVault_Reconcile_Secret_Success(t *testing.T) {
 			Name:      credName,
 			Namespace: ns,
 		},
-		StringData: map[string]string{
-			"password": "dummy",
+		Data: map[string][]byte{
+			"password": []byte("dummy"),
 		},
 	}
 

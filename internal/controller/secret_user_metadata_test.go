@@ -69,7 +69,7 @@ func newSecretUserMetaReconciler(t *testing.T, yaml []byte) (*OctoVaultReconcile
 
 	cred := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: credName, Namespace: ns},
-		StringData: map[string]string{"password": "dummy"},
+		Data:       map[string][]byte{"password": []byte("dummy")},
 	}
 	orepo := &octovaultv1alpha1.OctoRepository{
 		ObjectMeta: metav1.ObjectMeta{Name: orepoName},

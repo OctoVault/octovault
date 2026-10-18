@@ -50,17 +50,12 @@ func tokenFailureReason(err error) string {
 	return "SecretInvalidPasswordEncoding"
 }
 
-// secretValue StringData 는 API 서버가 돌려주지 않는 쓰기 전용 필드지만, 테스트에서 쓰는
-// fake client 는 Data 로 옮기지 않으므로 함께 본다.
+// secretValue Secret data 의 값. 비어 있으면 "".
+// stringData 는 쓰기 전용 필드라 API 서버가 읽을 때 돌려주지 않으므로 보지 않는다.
 func secretValue(s *corev1.Secret, key string) string {
 	if v, ok := s.Data[key]; ok && len(v) > 0 {
 
 		return string(v)
-	}
-
-	if v, ok := s.StringData[key]; ok && v != "" {
-
-		return v
 	}
 
 	return ""
