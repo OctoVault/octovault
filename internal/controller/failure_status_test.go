@@ -113,3 +113,31 @@ func TestOctoVault_DeleteWithEmptyResolvedType_RetainsTarget(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
 	assert.Empty(t, sec.OwnerReferences, "ownerRef must be removed so GC keeps the target")
 }
+
+func TestOctoVault_Delete_ReleasesTargetsOfBothKinds(t *testing.T) {
+	// ResolvedType 이 실제 대상과 어긋나도(여기선 ConfigMap 으로 기록됐지만 Secret 도 소유 중)
+	// 삭제 시 두 종류 모두 ownerRef 를 풀어 GC 되지 않게 해야 한다.
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	fetcher := &staticFetcher{files: map[string][]byte{path: sampleSecretYAML}, rev: "rev1"}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	current.Status.ResolvedType = "ConfigMap"
+	require.NoError(t, cl.Status().Update(ctx, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var sec corev1.Secret
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &sec))
+	assert.Empty(t, sec.OwnerReferences, "the Secret must be released even though status says ConfigMap")
+}

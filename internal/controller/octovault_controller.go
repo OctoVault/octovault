@@ -860,17 +860,11 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 		}
 	}
 
-	switch strings.ToLower(strings.TrimSpace(ov.Status.ResolvedType)) {
-	case strings.ToLower(string(octovaultv1alpha1.OutputConfigMap)):
-		tryCM()
-	case strings.ToLower(string(octovaultv1alpha1.OutputSecret)):
-		trySec()
-	default:
-		// ResolvedType 이 비어 있어도 대상이 있을 수 있다(이전 버전은 실패 시 상태를 지웠다).
-		// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 둘 다 시도해도 안전하다.
-		tryCM()
-		trySec()
-	}
+	// ResolvedType 만 믿지 않고 두 종류를 모두 확인한다. 상태가 실제 대상과 어긋날 수 있다
+	// (이전 버전이 실패 시 지운 경우, 타입 전환 직후 등). 하나라도 ownerRef 가 남으면 GC 가 지운다.
+	// removeOwner 는 이 OctoVault 의 UID 를 가진 ownerRef 만 지우므로 둘 다 시도해도 안전하다.
+	tryCM()
+	trySec()
 
 	return firstErr
 }
