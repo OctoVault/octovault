@@ -70,9 +70,17 @@ const DefaultPollInterval = 5 * time.Minute
 // 한 PAT 를 여러 OctoVault 가 나눠 쓰므로 짧은 주기 하나가 전체 한도를 잠식할 수 있다.
 const MinPollInterval = 30 * time.Second
 
-// pollIntervalOf spec.pollInterval 을 해석해 기본값과 하한을 적용한다.
+// pollIntervalOf spec.pollInterval 을 해석한다. 비었거나 해석할 수 없으면 기본값,
+// 하한보다 짧으면(0s 포함) 하한을 쓴다.
 func pollIntervalOf(ov *octovaultv1alpha1.OctoVault) time.Duration {
-	return max(ParseDurationOr(ov.Spec.PollInterval, DefaultPollInterval), MinPollInterval)
+
+	v, err := time.ParseDuration(strings.TrimSpace(ov.Spec.PollInterval))
+	if err != nil {
+
+		return DefaultPollInterval
+	}
+
+	return max(v, MinPollInterval)
 }
 
 const (

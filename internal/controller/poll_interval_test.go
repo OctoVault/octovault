@@ -19,4 +19,6 @@ func TestPollIntervalOf(t *testing.T) {
 	assert.Equal(t, 90*time.Second, of("90s"))
 	assert.Equal(t, 90*time.Minute, of("1h30m"))
 	assert.Equal(t, MinPollInterval, of("5s"), "values below the minimum are raised")
+	assert.Equal(t, MinPollInterval, of("0s"), "0s is below the minimum, not unset")
+	assert.Equal(t, DefaultPollInterval, of("garbage"))
 }
