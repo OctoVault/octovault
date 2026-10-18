@@ -264,11 +264,13 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// 삭제 중이면 대상 리소스에서 이 OctoVault 의 ownerRef 를 떼어 GC 되지 않게 남긴 뒤 파이널라이저를 지운다.
+	// 삭제 중이면 대상 리소스에서 이 OctoVault 의 소유 표시(owner-uid, 이전 버전의 ownerReference)를 지워
+	// 대상을 남긴 뒤 파이널라이저를 지운다.
 	if !ov.DeletionTimestamp.IsZero() {
 		if controllerutil.ContainsFinalizer(&ov, FinalizerOV) {
 
-			// 실패한 채로 파이널라이저를 지우면 ownerRef 가 남아 대상이 GC 로 삭제된다.
+			// 실패한 채로 파이널라이저를 지우면 소유 표시가 남는다. 이전 버전의 ownerReference 가 남은
+			// 대상은 GC 로 삭제될 수 있다.
 			if err := r.orphanTargets(ctx, &ov); err != nil {
 
 				logger.Error(err, "failed to orphan targets; keeping finalizer")
