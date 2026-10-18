@@ -35,7 +35,7 @@ of being corrected. Other drift (labels added by third parties, `Secret`
 data edits) is corrected at the next poll, so labels injected by mutating webhooks or policy engines don't
 cause a reconcile loop. Something that keeps rewriting the `ConfigMap` data will still trigger a reconcile
 (and a conditional GitHub request) every time it does so; don't point another controller at the same data. If `metadata.type` switches between `ConfigMap` and
-`Secret`, the previous object (if this `OctoVault` controls it) is deleted.
+`Secret`, the previous object (if this `OctoVault` owns it) is deleted.
 The one exception to "right away": while the credential's token is rate limited (`RateLimited`), nothing is
 fetched, so a deleted target is recreated only after the limit resets.
 
@@ -329,6 +329,11 @@ Breaking changes to check before upgrading:
   kubectl apply -f charts/octovault/crds/
   ```
 
+- **Targets no longer carry an `ownerReference`.** Earlier versions made each target a dependent of its
+  `OctoVault`. On its next sync every existing target is migrated: the `ownerReference` is removed and
+  `octovault.it/owner-uid` is set. Until an `OctoVault` has synced once after the upgrade, a foreground
+  deletion of it can still remove its targets.
+
 ### Manual CRDs
 
 If you prefer manual steps:
@@ -401,10 +406,14 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
     - The token is read from the Secret's `data.password` only (annotations are not accepted).
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
 - **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
-- Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
-  `OctoVault` does not delete its targets: the finalizer removes the `ownerReference` first (see below).
-- An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
-  Exception: an existing target with no controller is adopted if it carries `octovault.it/adopt: "true"`.
+- Operator writes into the target namespace. Targets are marked with the owning `OctoVault`'s UID
+  (`octovault.it/owner-uid`) plus owner labels, **not** with `ownerReferences`, so Kubernetes garbage
+  collection never deletes them: deleting an `OctoVault` keeps its targets with any deletion mode, including
+  foreground deletion (`kubectl delete --cascade=foreground`, Argo CD app deletion). Delete the targets
+  yourself if you no longer need them. (Targets therefore don't show up under the `OctoVault` in owner-tree
+  tools such as `kubectl tree`.)
+- An existing `ConfigMap`/`Secret` with the target name that this `OctoVault` does not own is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
+  Exception: an existing target not managed by another controller is adopted if it carries `octovault.it/adopt: "true"`.
   Deleting an `OctoVault` leaves its targets behind (with `octovault.it/retained-from: <ns>/<name>`); to have a
   recreated `OctoVault` (e.g. after a Helm/Argo reinstall) manage them again, add that annotation to each
   target, or delete the targets. Targets are never adopted by name alone: otherwise anyone allowed to create an
