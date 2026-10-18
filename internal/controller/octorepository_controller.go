@@ -103,6 +103,13 @@ var (
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
+	ctx, writes := trackStatusWrites(ctx)
+
+	return writes.apply(r.reconcile(ctx, req))
+}
+
+func (r *OctoRepositoryReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
 	logger := logf.FromContext(ctx)
 
 	var orepo octovaultv1alpha1.OctoRepository
@@ -171,12 +178,10 @@ func (r *OctoRepositoryReconciler) validateOrganizationAndMaybeFail(ctx context.
 		if !statusEqual(prev, desired) {
 			o.Status = desired
 
-			if !r.writeStatus(ctx, o) {
+			if r.writeStatus(ctx, o) {
 
-				return ctrl.Result{RequeueAfter: StatusRetryInterval}, true
+				r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 			}
-
-			r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 		}
 
 		return ctrl.Result{RequeueAfter: pollInterval}, true
@@ -197,7 +202,9 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 		if apierrors.IsNotFound(err) {
 
 			msg := fmt.Sprintf("secret %s not found", secKey.Name)
-			return nil, requeueAfter(r.setFailed(ctx, o, "SecretNotFound", msg), pollInterval), nil
+			r.setFailed(ctx, o, "SecretNotFound", msg)
+
+			return nil, ctrl.Result{RequeueAfter: pollInterval}, nil
 		}
 
 		return nil, ctrl.Result{}, err
@@ -221,7 +228,8 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 			msg = fmt.Sprintf("secret %s: %v", sec.Name, err)
 		}
 
-		return "", requeueAfter(r.setFailed(ctx, o, tokenFailureReason(err), msg), pollInterval)
+		r.setFailed(ctx, o, tokenFailureReason(err), msg)
+		return "", ctrl.Result{RequeueAfter: pollInterval}
 	}
 
 	return pwd, ctrl.Result{}
@@ -233,8 +241,8 @@ func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, 
 
 	if r.Checker == nil {
 
-		written := r.setFailed(ctx, o, "CheckerNotConfigured", "controller was started without an org access checker")
-		return ghclient.AccessResult{}, requeueAfter(written, pollInterval), true
+		r.setFailed(ctx, o, "CheckerNotConfigured", "controller was started without an org access checker")
+		return ghclient.AccessResult{}, ctrl.Result{RequeueAfter: pollInterval}, true
 	}
 
 	access, err := r.Checker.CheckAccess(ctx, o.Spec.Organization, pwd)
@@ -250,10 +258,14 @@ func (r *OctoRepositoryReconciler) checkAccessAndMaybeFail(ctx context.Context, 
 		logger.Info("github rate limit hit while verifying credentials; backing off",
 			"organization", o.Spec.Organization, "retryAfter", retryAfter)
 
-		return access, requeueAfter(r.setFailed(ctx, o, "RateLimited", err.Error()), retryAfter), true
+		r.setFailed(ctx, o, "RateLimited", err.Error())
+
+		return access, ctrl.Result{RequeueAfter: retryAfter}, true
 	}
 
-	return access, requeueAfter(r.setFailed(ctx, o, "AccessDenied", err.Error()), pollInterval), true
+	r.setFailed(ctx, o, "AccessDenied", err.Error())
+
+	return access, ctrl.Result{RequeueAfter: pollInterval}, true
 }
 
 // syncedAccess 검증에 성공했을 때 상태에 반영할 내용.
@@ -290,8 +302,8 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 		o.Status = desired
 		if !r.writeStatus(ctx, o) {
 
-			// 기록하지 못한 상태를 이벤트로 알리면 상태와 이벤트가 어긋난다. 곧 다시 시도한다.
-			return ctrl.Result{RequeueAfter: StatusRetryInterval}, nil
+			// 기록하지 못한 상태를 이벤트로 알리면 상태와 이벤트가 어긋난다. 재시도는 statusWrites 가 정한다.
+			return ctrl.Result{RequeueAfter: pollInterval}, nil
 		}
 
 		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Accessible", "organization %s is accessible; secret=%s", org, access.secretName)
@@ -306,9 +318,8 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
 
-// setFailed 실패 상태를 기록한다. 기록할 것이 없었거나 기록에 성공하면 true.
-// false 면 호출자는 poll 주기가 아니라 StatusRetryInterval 뒤에 다시 시도해야 한다(requeueAfter).
-func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1alpha1.OctoRepository, reason, msg string) bool {
+// setFailed 실패 상태를 기록한다. 기록에 실패하면 이벤트를 남기지 않고, 재시도는 statusWrites 가 정한다.
+func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1alpha1.OctoRepository, reason, msg string) {
 
 	prev := o.Status
 	desired := prev
@@ -320,39 +331,20 @@ func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
-		if !r.writeStatus(ctx, o) {
+		if r.writeStatus(ctx, o) {
 
-			return false
+			r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
 		}
-
-		r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
 	}
-
-	return true
 }
 
-// StatusRetryInterval 상태 기록에 실패했을 때 다시 시도하기까지의 시간.
-//
-// 실패 상태(예: 토큰 폐기)를 기록하지 못한 채 poll 주기(기본 10분)를 기다리면 그동안 상태가
-// 이전 값(Synced)으로 남아 장애가 가려진다. 대부분 conflict 이므로 짧게 다시 시도한다.
-const StatusRetryInterval = 5 * time.Second
-
-// requeueAfter 상태를 기록했으면 d 뒤에, 기록하지 못했으면 StatusRetryInterval 뒤에 다시 본다.
-func requeueAfter(written bool, d time.Duration) ctrl.Result {
-	if !written {
-
-		return ctrl.Result{RequeueAfter: StatusRetryInterval}
-	}
-
-	return ctrl.Result{RequeueAfter: d}
-}
-
-// writeStatus 상태를 기록하고 성공 여부를 반환한다. 실패하면 로그만 남긴다.
+// writeStatus 상태를 기록하고 성공 여부를 반환한다. 실패하면 로그를 남기고 statusWrites 에 알린다.
 // 호출자는 실패했을 때 이벤트를 남기지 않아야 한다. 상태와 이벤트가 서로 다른 말을 하게 된다.
 func (r *OctoRepositoryReconciler) writeStatus(ctx context.Context, o *octovaultv1alpha1.OctoRepository) bool {
 	if err := r.Status().Update(ctx, o); err != nil {
 
 		logf.FromContext(ctx).Error(err, "failed to update OctoRepository status", "name", o.Name)
+		noteStatusWriteError(ctx, err)
 		return false
 	}
 
