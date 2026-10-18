@@ -72,21 +72,19 @@ const MinPollInterval = 30 * time.Second
 
 // warnUnparsablePollInterval CRD 패턴은 통과했지만 Go duration 범위를 넘는 값(예: 9999999999h)은
 // 기본값으로 쓰되 조용히 넘기지 않는다. 같은 OctoVault 의 같은 값은 한 번만 로그로 남긴다.
+// 값이 정상으로 돌아오면(그리고 삭제될 때) 기록을 지워, 기록이 계속 쌓이지 않게 한다.
 func (r *OctoVaultReconciler) warnUnparsablePollInterval(ctx context.Context, ov *octovaultv1alpha1.OctoVault) {
 
+	uid := string(ov.UID)
 	v := strings.TrimSpace(ov.Spec.PollInterval)
-	if v == "" {
-
-		return
-	}
-
 	_, err := time.ParseDuration(v)
-	if err == nil {
+	if v == "" || err == nil {
 
+		r.pollWarned.Delete(uid)
 		return
 	}
 
-	if _, seen := r.pollWarned.LoadOrStore(string(ov.UID)+"/"+v, struct{}{}); seen {
+	if prev, seen := r.pollWarned.Swap(uid, v); seen && prev == v {
 
 		return
 	}
@@ -221,7 +219,7 @@ type OctoVaultReconciler struct {
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 
-	// pollWarned 해석할 수 없는 pollInterval 을 이미 로그로 남긴 "<uid>/<값>".
+	// pollWarned UID → 이미 로그로 남긴 해석할 수 없는 pollInterval 값.
 	pollWarned sync.Map
 
 	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
@@ -283,6 +281,8 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 		// UID 별로 남겨 둔 기록을 지워, 지워진 OctoVault 의 항목이 메모리에 쌓이지 않게 한다.
 		r.reservedWarned.Delete(string(ov.UID))
+
+		r.pollWarned.Delete(string(ov.UID))
 
 		return ctrl.Result{}, nil
 	}

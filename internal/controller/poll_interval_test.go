@@ -57,4 +57,21 @@ func TestOctoVault_UnparsablePollInterval_IsLoggedOnce(t *testing.T) {
 	}
 
 	assert.Len(t, lines, 1)
+
+	// 값이 정상으로 돌아오면 기록을 지운다. 다시 잘못된 값이 되면 다시 알린다.
+	require.NoError(t, cl.Get(ctx, key, &current))
+	current.Spec.PollInterval = "5m"
+	require.NoError(t, cl.Update(ctx, &current))
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	_, tracked := rec.pollWarned.Load(string(current.UID))
+	assert.False(t, tracked, "a fixed value must not stay in pollWarned")
+
+	require.NoError(t, cl.Get(ctx, key, &current))
+	current.Spec.PollInterval = "9999999999h"
+	require.NoError(t, cl.Update(ctx, &current))
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+	assert.Len(t, lines, 2)
 }
