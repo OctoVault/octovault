@@ -68,7 +68,7 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 	}
 
 	// 복호화 여부에 따라 응답 값이 달라지므로(SecureString 은 암호문/평문) 캐시 키에 포함한다.
-	ent, err := p.cache.Get(cacheKey(name, withDecryption), func() (cacheEntry, error) {
+	ent, err := p.cache.Get(ctx, cacheKey(name, withDecryption), func(ctx context.Context) (cacheEntry, error) {
 		return p.fetch(ctx, name, withDecryption)
 	})
 	if err != nil {

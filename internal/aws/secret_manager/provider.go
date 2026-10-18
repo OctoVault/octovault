@@ -69,7 +69,7 @@ func (p *Provider) GetSecret(ctx context.Context, name string) ([]byte, Meta, er
 		return nil, Meta{}, errors.New("secret name required")
 	}
 
-	ent, err := p.cache.Get(name, func() (cacheEntry, error) {
+	ent, err := p.cache.Get(ctx, name, func(ctx context.Context) (cacheEntry, error) {
 		return p.fetch(ctx, name)
 	})
 	if err != nil {

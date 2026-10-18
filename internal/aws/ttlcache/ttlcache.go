@@ -5,14 +5,20 @@
 package ttlcache
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
 
-// DefaultMaxEntries 기본 최대 항목 수.
-const DefaultMaxEntries = 1024
+const (
+	// DefaultMaxEntries 기본 최대 항목 수.
+	DefaultMaxEntries = 1024
+
+	// DefaultLoadTimeout 한 번의 load 에 허용하는 시간.
+	DefaultLoadTimeout = 30 * time.Second
+)
 
 type entry[V any] struct {
 	value V
@@ -20,12 +26,13 @@ type entry[V any] struct {
 }
 
 type Cache[V any] struct {
-	mu      sync.Mutex
-	ttl     time.Duration
-	max     int
-	entries map[string]entry[V]
-	group   singleflight.Group
-	now     func() time.Time
+	mu          sync.Mutex
+	ttl         time.Duration
+	max         int
+	loadTimeout time.Duration
+	entries     map[string]entry[V]
+	group       singleflight.Group
+	now         func() time.Time
 }
 
 // Option Cache 생성 옵션.
@@ -41,6 +48,16 @@ func WithMaxEntries[V any](n int) Option[V] {
 	}
 }
 
+// WithLoadTimeout load 한 번에 허용하는 시간. 0 이하면 DefaultLoadTimeout.
+func WithLoadTimeout[V any](d time.Duration) Option[V] {
+	return func(c *Cache[V]) {
+		if d > 0 {
+
+			c.loadTimeout = d
+		}
+	}
+}
+
 // WithClock 테스트용 시계.
 func WithClock[V any](now func() time.Time) Option[V] {
 	return func(c *Cache[V]) {
@@ -52,10 +69,11 @@ func WithClock[V any](now func() time.Time) Option[V] {
 func New[V any](ttl time.Duration, opts ...Option[V]) *Cache[V] {
 
 	c := &Cache[V]{
-		ttl:     ttl,
-		max:     DefaultMaxEntries,
-		entries: make(map[string]entry[V]),
-		now:     time.Now,
+		ttl:         ttl,
+		max:         DefaultMaxEntries,
+		loadTimeout: DefaultLoadTimeout,
+		entries:     make(map[string]entry[V]),
+		now:         time.Now,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -64,35 +82,45 @@ func New[V any](ttl time.Duration, opts ...Option[V]) *Cache[V] {
 	return c
 }
 
-// Get 캐시에 유효한 값이 있으면 돌려주고, 없으면 load 로 채운다.
-// 같은 키에 대한 동시 호출은 load 를 한 번만 실행하고 결과를 공유한다. 실패는 캐시하지 않는다.
-func (c *Cache[V]) Get(key string, load func() (V, error)) (V, error) {
+// Get 캐시에 유효한 값이 있으면 돌려주고, 없으면 load 로 채운다. 실패는 캐시하지 않는다.
+//
+// 같은 키에 대한 동시 호출은 load 를 한 번만 실행하고 결과를 공유한다. load 는 어느 한 호출자의
+// ctx 에 묶이지 않는다. 처음 요청한 reconcile 이 취소돼도 기다리던 다른 호출자까지 실패하지
+// 않도록, 호출자 ctx 의 값만 물려받고 취소는 끊은 ctx 에 loadTimeout 을 걸어 실행한다.
+// 각 호출자는 자기 ctx 가 끝나면 결과를 기다리지 않고 바로 돌아간다.
+func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Context) (V, error)) (V, error) {
 	if v, ok := c.lookup(key); ok {
 
 		return v, nil
 	}
 
-	out, err, _ := c.group.Do(key, func() (any, error) {
+	ch := c.group.DoChan(key, func() (any, error) {
 		// 앞선 호출이 방금 채웠을 수 있다.
 		if v, ok := c.lookup(key); ok {
 
 			return v, nil
 		}
 
-		v, err := load()
-		if err != nil {
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.loadTimeout)
+		defer cancel()
 
-			return v, err
+		v, err := load(lctx)
+		if err == nil {
+
+			c.store(key, v)
 		}
 
-		c.store(key, v)
-
-		return v, nil
+		return v, err
 	})
 
-	v, _ := out.(V)
-
-	return v, err
+	select {
+	case <-ctx.Done():
+		var zero V
+		return zero, ctx.Err()
+	case res := <-ch:
+		v, _ := res.Val.(V)
+		return v, res.Err
+	}
 }
 
 // Len 현재 항목 수(만료됐지만 아직 정리되지 않은 항목 포함).
