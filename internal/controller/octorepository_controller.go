@@ -228,7 +228,8 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 		msg := "secret missing password"
 		if !errors.Is(err, errMissingPassword) {
 
-			msg = fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err)
+			// err 가 이미 "invalid base64 in 'password' key: <원인>" 이므로 같은 말을 덧붙이지 않는다.
+			msg = fmt.Sprintf("secret %s: %v", sec.Name, err)
 		}
 
 		r.setFailed(ctx, o, tokenFailureReason(err), msg)

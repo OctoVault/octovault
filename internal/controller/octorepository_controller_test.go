@@ -262,7 +262,7 @@ func TestOctoRepository_SecretInvalidBase64(t *testing.T) {
 	var got octovaultv1alpha1.OctoRepository
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: "orepo"}, &got))
 	require.Equal(t, octovaultv1alpha1.OctoRepoPhaseFailed, got.Status.Phase)
-	require.Contains(t, got.Status.Message, "failed to decode password")
+	require.Contains(t, got.Status.Message, "invalid base64 in 'password' key")
 	ready := getReady(got.Status.Conditions)
 	require.NotNil(t, ready)
 	require.Equal(t, "SecretInvalidPasswordEncoding", ready.Reason)
