@@ -6,6 +6,7 @@ package ttlcache
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -101,6 +102,13 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 		return v, nil
 	}
 
+	// 이미 끝난 호출자 때문에 최대 loadTimeout 동안 도는 조회를 새로 시작하지 않는다.
+	if err := ctx.Err(); err != nil {
+
+		var zero V
+		return zero, err
+	}
+
 	ch := c.group.DoChan(key, func() (any, error) {
 		// 앞선 호출이 방금 채웠을 수 있다.
 		if v, ok := c.lookup(key); ok {
@@ -111,7 +119,7 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.loadTimeout)
 		defer cancel()
 
-		v, err := load(lctx)
+		v, err := safeLoad(lctx, load)
 		if err == nil {
 
 			c.store(key, v)
@@ -168,4 +176,19 @@ func (c *Cache[V]) dropIfUnchanged(key string, seen entry[V]) {
 	c.entries.DropIf(key, func(cur entry[V]) bool {
 		return cur.exp.Equal(seen.exp)
 	})
+}
+
+// safeLoad load 의 panic 을 에러로 바꾼다.
+//
+// load 는 singleflight 가 따로 띄운 고루틴에서 돈다. 여기서 난 panic 은 controller-runtime 의
+// reconcile recover 가 잡지 못하고 프로세스를 죽인다. 이전처럼 해당 reconcile 만 실패하게 한다.
+func safeLoad[V any](ctx context.Context, load func(context.Context) (V, error)) (v V, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+
+			err = fmt.Errorf("aws lookup panicked: %v", r)
+		}
+	}()
+
+	return load(ctx)
 }

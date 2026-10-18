@@ -257,3 +257,32 @@ func TestCache_EvictHookCountsEvictions(t *testing.T) {
 	require.Equal(t, 3, c.Len())
 	require.Equal(t, 2, evicted)
 }
+
+// 조회 중 panic 은 프로세스를 죽이지 않고 호출자에게 에러로 돌아와야 한다.
+func TestCache_LoadPanicBecomesError(t *testing.T) {
+
+	c := New[string](time.Minute)
+
+	_, err := c.Get(context.Background(), "k", func(context.Context) (string, error) {
+		panic("boom")
+	})
+	require.ErrorContains(t, err, "aws lookup panicked: boom")
+	require.Equal(t, 0, c.Len())
+}
+
+// 호출자 ctx 가 이미 끝났으면 새 조회를 시작하지 않는다.
+func TestCache_DoneContextDoesNotStartLoad(t *testing.T) {
+
+	c := New[string](time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	_, err := c.Get(ctx, "k", func(context.Context) (string, error) {
+		called = true
+
+		return "v", nil
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, called)
+}
