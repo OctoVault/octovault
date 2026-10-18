@@ -273,6 +273,13 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 	r.ensurePendingInit(ctx, &ov)
 
 	poll := pollIntervalOf(&ov)
+	if v := strings.TrimSpace(ov.Spec.PollInterval); v != "" {
+		if _, err := time.ParseDuration(v); err != nil {
+
+			// CRD 패턴은 통과했지만 Go duration 범위를 넘는 값(예: 9999999999h). 기본값으로 쓰되 조용히 넘기지 않는다.
+			logger.Info("spec.pollInterval cannot be parsed; using the default", "pollInterval", v, "default", DefaultPollInterval, "error", err.Error())
+		}
+	}
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
