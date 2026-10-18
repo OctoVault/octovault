@@ -11,13 +11,19 @@ func TestPositiveIntEnv(t *testing.T) {
 	const key = "OCTOVAULT_TEST_POSITIVE_INT"
 
 	t.Setenv(key, "")
-	assert.Equal(t, 7, positiveIntEnv(key, 7))
+	n, ok := positiveIntEnv(key, 7)
+	assert.Equal(t, 7, n)
+	assert.True(t, ok, "unset is not an error")
 
-	for _, bad := range []string{"0", "-3", "lots"} {
+	for _, bad := range []string{"0", "-3", "lots", "2e+06"} {
 		t.Setenv(key, bad)
-		assert.Equal(t, 7, positiveIntEnv(key, 7), bad)
+		n, ok := positiveIntEnv(key, 7)
+		assert.Equal(t, 7, n, bad)
+		assert.False(t, ok, "%q must be reported", bad)
 	}
 
 	t.Setenv(key, " 4096 ")
-	assert.Equal(t, 4096, positiveIntEnv(key, 7))
+	n, ok = positiveIntEnv(key, 7)
+	assert.Equal(t, 4096, n)
+	assert.True(t, ok)
 }

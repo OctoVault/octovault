@@ -343,7 +343,18 @@ func main() {
 	AwsPSTtl := controller.ParseDurationOr(os.Getenv("AWS_PS_TTL"), time.Minute)
 	// 서로 다른 AWS 참조(Parameter Store 는 복호화 여부별로 따로) 수가 이보다 많으면 캐시가 계속
 	// 밀려나 적중률이 떨어진다. octovault_aws_cache_evictions_total 이 늘면 올린다.
-	awsCacheMax := positiveIntEnv("AWS_CACHE_MAX_ENTRIES", ttlcache.DefaultMaxEntries)
+	awsCacheMax, ok := positiveIntEnv("AWS_CACHE_MAX_ENTRIES", ttlcache.DefaultMaxEntries)
+	if !ok {
+
+		setupLog.Info("AWS_CACHE_MAX_ENTRIES is not a positive integer; using the default",
+			"value", os.Getenv("AWS_CACHE_MAX_ENTRIES"), "default", ttlcache.DefaultMaxEntries)
+	}
+
+	if awsCacheMax > maxAWSCacheEntries {
+
+		setupLog.Info("AWS_CACHE_MAX_ENTRIES is too large; capping it", "value", awsCacheMax, "max", maxAWSCacheEntries)
+		awsCacheMax = maxAWSCacheEntries
+	}
 
 	awsSMProv, err := awssm.New(context.Background(), region, awssm.CacheOptions{TTL: AwsSMTtl, MaxEntries: awsCacheMax})
 	if err != nil {
@@ -493,14 +504,26 @@ func newTargetSecretCache(mgr ctrl.Manager) (cache.Cache, error) {
 	return c, nil
 }
 
-// positiveIntEnv 환경 변수가 양의 정수면 그 값, 아니면 def.
-func positiveIntEnv(key string, def int) int {
-	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && n > 0 {
+// maxAWSCacheEntries AWS_CACHE_MAX_ENTRIES 의 상한. 항목마다 복호화된 값이 메모리에 남으므로
+// 실수로 큰 값을 넣어도 컨트롤러가 메모리를 다 쓰지 않게 막는다.
+const maxAWSCacheEntries = 100_000
 
-		return n
+// positiveIntEnv 환경 변수가 양의 정수면 그 값, 비어 있으면 def. 값이 있는데 양의 정수가 아니면
+// def 와 false 를 돌려 호출자가 알릴 수 있게 한다(예: 차트가 큰 숫자를 2e+06 으로 렌더링한 경우).
+func positiveIntEnv(key string, def int) (int, bool) {
+
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+
+		return def, true
 	}
 
-	return def
+	if n, err := strconv.Atoi(v); err == nil && n > 0 {
+
+		return n, true
+	}
+
+	return def, false
 }
 
 // resolveWorkers: env(>0) flag(>0) > def
