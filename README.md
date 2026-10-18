@@ -359,7 +359,9 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 
 - Conditions and rich Status on both CRDs.
 - Kubernetes Events for error/success paths.
-- Prometheus metrics endpoint (HTTP/HTTPS) with optional authz.
+- Prometheus metrics endpoint (HTTP/HTTPS) with optional authz. With `controller.metrics.secure: true` (the
+  default), scrapes must present a ServiceAccount token: bind the chart's `<release>-metrics-reader`
+  ClusterRole to your Prometheus ServiceAccount. The chart's ServiceMonitor sends the token for you.
 
 ### GitHub rate-limit metrics
 
