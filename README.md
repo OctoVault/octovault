@@ -360,8 +360,19 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 - Conditions and rich Status on both CRDs.
 - Kubernetes Events for error/success paths.
 - Prometheus metrics endpoint (HTTP/HTTPS) with optional authz. With `controller.metrics.secure: true` (the
-  default), scrapes must present a ServiceAccount token: bind the chart's `<release>-metrics-reader`
-  ClusterRole to your Prometheus ServiceAccount. The chart's ServiceMonitor sends the token for you.
+  default), scrapes must present a ServiceAccount token: bind the chart's `<fullname>-metrics-reader`
+  ClusterRole (`octovault-metrics-reader` with the default `fullnameOverride`) to your Prometheus
+  ServiceAccount. The chart's ServiceMonitor sends the token.
+- Secure metrics are served over TLS, so Prometheus must also trust the certificate:
+  - **Your own certificate (recommended):** put `tls.crt`/`tls.key` in a Secret and set
+    `metrics.existingSecret`; the controller then serves it (`--metrics-cert-path`). Point
+    `prometheus.serviceMonitor.tlsConfig` at the issuing CA and set `serverName` to the metrics Service
+    (`<fullname>-metrics.<namespace>.svc`).
+  - **Default self-signed certificate:** without `metrics.existingSecret` the controller generates a
+    self-signed certificate, which Prometheus rejects ("x509: certificate signed by unknown authority")
+    unless you set `prometheus.serviceMonitor.tlsConfig.insecureSkipVerify: true`. That skips server
+    verification while still sending the ServiceAccount token, so prefer your own certificate outside
+    test clusters.
 
 ### GitHub rate-limit metrics
 
