@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,10 +20,16 @@ import (
 	"github.com/octovault/octovault/internal/controller"
 )
 
-type mapFetcher map[string][]byte
+type mapFetcher struct {
+	files map[string][]byte
+	calls atomic.Int32
+}
 
-func (m mapFetcher) Fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
-	return m[path], nil, "rev1", nil
+func (m *mapFetcher) Fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
+
+	m.calls.Add(1)
+
+	return m.files[path], nil, "rev1", nil
 }
 
 // 대상 ConfigMap/Secret 이 지워지면 poll 주기(여기선 60m)를 기다리지 않고 바로 다시 만들어져야 한다.
@@ -52,14 +59,16 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 	targetSecrets, err := newTargetSecretCache(mgr)
 	require.NoError(t, err)
 
+	fetcher := &mapFetcher{files: map[string][]byte{
+		"cm.yaml":  []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: a\n      value: b\n"),
+		"sec.yaml": []byte("metadata:\n  type: Secret\nspec:\n  data:\n    - key: a\n      value: b\n"),
+	}}
+
 	require.NoError(t, (&controller.OctoVaultReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("octovault"),
-		Git: mapFetcher{
-			"cm.yaml":  []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: a\n      value: b\n"),
-			"sec.yaml": []byte("metadata:\n  type: Secret\nspec:\n  data:\n    - key: a\n      value: b\n"),
-		},
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		Recorder:      mgr.GetEventRecorderFor("octovault"),
+		Git:           fetcher,
 		TargetSecrets: targetSecrets,
 	}).SetupWithManager(mgr))
 
@@ -113,4 +122,25 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 			return exists() && tc.target.GetUID() != uid
 		}, 20*time.Second, 100*time.Millisecond, "%s must be recreated without waiting for the poll interval", name)
 	}
+
+	// 다른 주체가 붙인 라벨은 reconcile 을 일으키지 않아야 한다(webhook 과의 덮어쓰기 루프 방지).
+	cmKey := client.ObjectKey{Name: "out-cm", Namespace: "default"}
+	var cm corev1.ConfigMap
+	require.Eventually(t, func() bool { return direct.Get(ctx, cmKey, &cm) == nil }, 20*time.Second, 100*time.Millisecond)
+	time.Sleep(time.Second) // 앞선 재생성으로 인한 reconcile 이 끝나기를 기다린다
+	before := fetcher.calls.Load()
+
+	cm.Labels["injected-by-webhook"] = "yes"
+	require.NoError(t, direct.Update(ctx, &cm))
+	time.Sleep(2 * time.Second)
+	require.Equal(t, before, fetcher.calls.Load(), "a foreign label must not trigger a reconcile")
+
+	// 데이터를 손으로 바꾸면 바로 되돌린다.
+	require.NoError(t, direct.Get(ctx, cmKey, &cm))
+	cm.Data["a"] = "edited"
+	require.NoError(t, direct.Update(ctx, &cm))
+	require.Eventually(t, func() bool {
+		return direct.Get(ctx, cmKey, &cm) == nil && cm.Data["a"] == "b"
+	}, 20*time.Second, 100*time.Millisecond,
+		"a hand edit to managed data must be reverted without waiting for the poll interval")
 }

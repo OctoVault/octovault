@@ -1261,9 +1261,10 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV,
 		builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 
-	// 대상이 지워지거나 손으로 바뀌면 poll 주기를 기다리지 않고 바로 되돌린다.
+	// 대상이 지워지거나 컨트롤러가 책임지는 부분이 손으로 바뀌면 poll 주기를 기다리지 않고 바로
+	// 되돌린다. 어떤 변경에 반응하는지는 targetEventFilter 를 본다.
 	// 컨트롤러 자신의 갱신도 이벤트가 되지만, 다음 reconcile 에서 바뀐 것이 없어 끝난다.
-	b = b.Owns(&corev1.ConfigMap{})
+	b = b.Owns(&corev1.ConfigMap{}, builder.WithPredicates(targetEventFilter[client.Object]()))
 
 	if r.TargetSecrets != nil {
 
@@ -1272,7 +1273,8 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 		b = b.WatchesRawSource(source.Kind(r.TargetSecrets, secretMeta,
 			handler.TypedEnqueueRequestForOwner[*metav1.PartialObjectMetadata](
-				mgr.GetScheme(), mgr.GetRESTMapper(), &octovaultv1alpha1.OctoVault{}, handler.OnlyControllerOwner())))
+				mgr.GetScheme(), mgr.GetRESTMapper(), &octovaultv1alpha1.OctoVault{}, handler.OnlyControllerOwner()),
+			targetEventFilter[*metav1.PartialObjectMetadata]()))
 	}
 
 	return b.Complete(r)
