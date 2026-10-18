@@ -218,4 +218,11 @@ func TestOctoVault_DeleteAndRecreate_ResumesManagingTarget(t *testing.T) {
 	var updated octovaultv1alpha1.OctoVault
 	require.NoError(t, cl.Get(ctx, key, &updated))
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
+	ctrlRef := metav1.GetControllerOf(&cm)
+	require.NotNil(t, ctrlRef, "the target must have a controller again")
+	assert.Equal(t, types.UID("recreated-uid"), ctrlRef.UID, "the controller must be the recreated OctoVault")
+	assert.NotContains(t, cm.Annotations, AnnoOVRetainedBy)
 }
