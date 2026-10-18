@@ -47,6 +47,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -986,7 +987,9 @@ func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 	}
 
 	// 외부 시크릿이 회전돼 값은 같고 버전만 바뀐 경우도 상태에 남아야 한다.
-	if !reflect.DeepEqual(a.ExternalRefs, b.ExternalRefs) {
+	// Semantic 은 nil 과 빈 슬라이스를 같게 본다. reflect.DeepEqual 로 비교하면 VersionStages 가
+	// nil 로 돌아오는지 [] 로 돌아오는지에 따라 매번 바뀐 것으로 보고 쓰기와 이벤트를 반복할 수 있다.
+	if !equality.Semantic.DeepEqual(a.ExternalRefs, b.ExternalRefs) {
 
 		return false
 	}
