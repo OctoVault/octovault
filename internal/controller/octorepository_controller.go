@@ -158,8 +158,6 @@ func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *OctoRepositoryReconciler) validateOrganizationAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository) (ctrl.Result, bool) {
 
-	logger := logf.FromContext(ctx)
-
 	prev := o.Status
 	orgField := strings.TrimSpace(o.Spec.Organization)
 	if orgField == "" || !orgURLPattern.MatchString(orgField) {
@@ -173,12 +171,10 @@ func (r *OctoRepositoryReconciler) validateOrganizationAndMaybeFail(ctx context.
 		if !statusEqual(prev, desired) {
 			o.Status = desired
 
-			if err := r.Status().Update(ctx, o); err != nil {
+			if r.writeStatus(ctx, o) {
 
-				logger.Error(err, "failed to update status to Failed")
+				r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 			}
-
-			r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 		}
 
 		return ctrl.Result{RequeueAfter: pollInterval}, true
@@ -297,7 +293,11 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
-		_ = r.Status().Update(ctx, o)
+		if !r.writeStatus(ctx, o) {
+
+			// 기록하지 못한 상태를 이벤트로 알리면 상태와 이벤트가 어긋난다. 재시도한다.
+			return ctrl.Result{}, errStatusNotWritten
+		}
 
 		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Accessible", "organization %s is accessible; secret=%s", org, access.secretName)
 		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Synced", "organization %s is accessible; secret=%s", org, access.secretName)
@@ -323,9 +323,26 @@ func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
-		_ = r.Status().Update(ctx, o)
-		r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
+		if r.writeStatus(ctx, o) {
+
+			r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
+		}
 	}
+}
+
+// errStatusNotWritten 상태 갱신에 실패해 reconcile 을 다시 시도해야 한다. 원인은 writeStatus 가 로그로 남긴다.
+var errStatusNotWritten = errors.New("OctoRepository status update failed")
+
+// writeStatus 상태를 기록하고 성공 여부를 반환한다. 실패하면 로그만 남긴다.
+// 호출자는 실패했을 때 이벤트를 남기지 않아야 한다. 상태와 이벤트가 서로 다른 말을 하게 된다.
+func (r *OctoRepositoryReconciler) writeStatus(ctx context.Context, o *octovaultv1alpha1.OctoRepository) bool {
+	if err := r.Status().Update(ctx, o); err != nil {
+
+		logf.FromContext(ctx).Error(err, "failed to update OctoRepository status", "name", o.Name)
+		return false
+	}
+
+	return true
 }
 
 // SetupWithManager sets up the controller with the Manager.
