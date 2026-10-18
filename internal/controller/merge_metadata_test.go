@@ -109,3 +109,24 @@ func TestMergeAnnotations(t *testing.T) {
 		assert.Equal(t, "", val)
 	})
 }
+
+func TestMergeMap_DropsReservedUserKeys(t *testing.T) {
+
+	user := map[string]string{
+		"octovault.it/retained-from":       "ns/other",
+		"octovault.it/repository":          "true",
+		"reconcile.octovault.it/data-hash": "forged",
+		"team":                             "a",
+		"example.com/octovault.it":         "ok",
+		"notoctovault.it/key":              "ok",
+	}
+
+	got := mergeMap(map[string]string{"reconcile.octovault.it/data-hash": "real"}, user)
+
+	assert.Equal(t, map[string]string{
+		"reconcile.octovault.it/data-hash": "real",
+		"team":                             "a",
+		"example.com/octovault.it":         "ok",
+		"notoctovault.it/key":              "ok",
+	}, got)
+}

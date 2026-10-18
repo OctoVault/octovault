@@ -172,7 +172,7 @@ spec:
 ```
 - If `metadata.type` is `ConfigMap`, values become `.data[string]`.
 - Only `Text` (default) type is supported.
-- **OctoVault owns the labels and annotations of the resource it creates.** System keys are always preserved even if they are not declared in `values.yaml`. For user/third-party `metadata.labels` and `metadata.annotations`, only keys declared in `values.yaml` are retained; any undeclared keys are removed on every reconcile.
+- **OctoVault owns the labels and annotations of the resource it creates.** System keys are always preserved even if they are not declared in `values.yaml`. For user/third-party `metadata.labels` and `metadata.annotations`, only keys declared in `values.yaml` are retained; any undeclared keys are removed on every reconcile. Keys in the `octovault.it` domain (`octovault.it/...`, `*.octovault.it/...`) are reserved for the controller and are ignored if set in `values.yaml`.
 
 #### Secret
 ```yaml
