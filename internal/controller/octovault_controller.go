@@ -648,7 +648,8 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return err
 	}
 
-	if !metav1.IsControlledBy(&cm, ov) {
+	adopted, owned := claimTarget(&cm.ObjectMeta, ov)
+	if !owned {
 
 		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
 	}
@@ -656,7 +657,8 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if reflect.DeepEqual(cm.Labels, desiredLabels) &&
+	if !adopted &&
+		reflect.DeepEqual(cm.Labels, desiredLabels) &&
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(cm.Data, data) {
 		return nil
@@ -702,7 +704,8 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return err
 	}
 
-	if !metav1.IsControlledBy(&sec, ov) {
+	adopted, owned := claimTarget(&sec.ObjectMeta, ov)
+	if !owned {
 
 		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
 	}
@@ -710,7 +713,8 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if reflect.DeepEqual(sec.Labels, desiredLabels) &&
+	if !adopted &&
+		reflect.DeepEqual(sec.Labels, desiredLabels) &&
 		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(sec.Data, data) {
 		return nil
@@ -724,6 +728,37 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	sec.Data = data
 
 	return r.Update(ctx, &sec)
+}
+
+// claimTarget 기존 대상을 이 OctoVault 가 관리해도 되는지 판단한다.
+//
+// 이미 controller 이면 그대로 쓴다. controller 가 없고, 이 OctoVault(같은 <ns>/<name>)가
+// 남긴 흔적이 있으면 controller ref 를 다시 붙여 가져온다(adopted=true). 흔적은 두 가지다.
+//   - retained-from: 삭제 시 orphanTargets 가 남긴다. 같은 이름으로 다시 만들면(재설치) 이어받는다.
+//   - owner 어노테이션: 생성 시 붙인다. --cascade=orphan 처럼 GC 가 ownerRef 만 지운 경우를 덮는다.
+//
+// 다른 controller 가 있거나 흔적이 없으면 owned=false 다. 흔적은 그 리소스를 수정할 수 있는
+// 주체만 남길 수 있으므로, OctoVault 생성 권한만으로 남의 리소스를 가져올 수는 없다.
+func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
+	if metav1.IsControlledBy(obj, ov) {
+
+		return false, true
+	}
+
+	if metav1.GetControllerOf(obj) != nil {
+
+		return false, false
+	}
+
+	ann := obj.GetAnnotations()
+	if ann[AnnoOVRetainedBy] != ov.Namespace+"/"+ov.Name && ann[AnnoOVOwnerFull] != ov.Namespace+"/"+labelSafe(ov.Name) {
+
+		return false, false
+	}
+
+	obj.OwnerReferences = append(obj.OwnerReferences, *metav1.NewControllerRef(ov, ov.GroupVersionKind()))
+
+	return true, true
 }
 
 func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1alpha1.OctoVault) error {

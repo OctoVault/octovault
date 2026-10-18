@@ -134,3 +134,87 @@ func TestOctoVault_SecretOwnedByAnotherOctoVault_IsNotOverwritten(t *testing.T) 
 	require.Len(t, sec.OwnerReferences, 1)
 	assert.Equal(t, types.UID("other-uid"), sec.OwnerReferences[0].UID)
 }
+
+// 삭제 후 같은 이름으로 다시 만든 OctoVault 는 이전에 남겨 둔 대상을 이어받아야 한다.
+func TestOctoVault_RetainedTarget_IsAdoptedByRecreatedOctoVault(t *testing.T) {
+
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{AnnoOVRetainedBy: ownershipNS + "/ov-ownership"},
+		},
+		Data: map[string]string{"old": "data"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, &cm))
+	assert.True(t, metav1.IsControlledBy(&cm, &updated), "controller ref must point at the new OctoVault")
+	assert.NotContains(t, cm.Annotations, AnnoOVRetainedBy)
+	assert.Equal(t, "bar", cm.Data["foo"])
+}
+
+// --cascade=orphan 처럼 ownerRef 만 사라지고 생성 시 붙인 owner 어노테이션이 남은 경우도 이어받는다.
+func TestOctoVault_OrphanedTargetWithOwnerAnnotation_IsAdopted(t *testing.T) {
+
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-ownership"},
+		},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleSecretYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+}
+
+// 다른 OctoVault 가 남긴 흔적으로는 가져오지 않는다.
+func TestOctoVault_TargetRetainedByAnotherOctoVault_IsNotAdopted(t *testing.T) {
+
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{AnnoOVRetainedBy: ownershipNS + "/someone-else"},
+		},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+}
+
+// 삭제(파이널라이저가 대상을 남김) → 같은 이름으로 재생성 → 다시 동기화되는 전체 흐름.
+func TestOctoVault_DeleteAndRecreate_ResumesManagingTarget(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/recreate.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+	require.True(t, client.IgnoreNotFound(cl.Get(ctx, key, &current)) == nil)
+
+	recreated := ov.DeepCopy()
+	recreated.ResourceVersion = ""
+	recreated.UID = types.UID("recreated-uid")
+	require.NoError(t, cl.Create(ctx, recreated))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var updated octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &updated))
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+}
