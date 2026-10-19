@@ -389,6 +389,13 @@ func (f *Fetcher) limitOrPermissionError(cr contentRequest, resp *http.Response)
 		return rle
 	}
 
+	// 기본 미디어 타입으로 1MB 를 넘는 파일을 요청하면 GitHub 는 403 과 함께 code "too_large" 를 돌려준다.
+	// 권한 문제로 보고하면 원인을 찾기 어렵다.
+	if resp.StatusCode == http.StatusForbidden && bytes.Contains(peek, []byte("too_large")) {
+
+		return errors.New("file is larger than 1MB: GitHub's contents API does not return it inline, and a ConfigMap or Secret cannot exceed 1MiB")
+	}
+
 	if resp.StatusCode == http.StatusForbidden {
 
 		return errors.New("403 forbidden: token lacks access to the resource")

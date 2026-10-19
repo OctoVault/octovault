@@ -368,3 +368,25 @@ func TestFetcher_fetchContentBase64_NotAFile(t *testing.T) {
 		})
 	}
 }
+
+// 기본 미디어 타입에서 1MB 를 넘는 파일은 403 too_large 로 온다. 권한 오류로 보고하면 안 된다.
+func TestFetcher_Fetch_TooLargeForbiddenIsNotAPermissionError(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	f := NewFetcher(Options{HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: stub}})
+
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		resp := jsonResp(http.StatusForbidden, map[string]any{
+			"message": "This API returns blobs up to 1 MB in size. The requested blob is too large to fetch via the API, but you can use the Git Data API to request blobs up to 100 MB in size.",
+			"errors":  []map[string]string{{"resource": "Blob", "field": "data", "code": "too_large"}},
+		})
+		resp.Header.Set("X-RateLimit-Remaining", "4999")
+
+		return resp, nil
+	}
+
+	_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "big.yaml", "", "tok")
+	require.ErrorContains(t, err, "larger than 1MB")
+	require.NotContains(t, err.Error(), "lacks access")
+}
