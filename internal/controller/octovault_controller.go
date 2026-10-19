@@ -230,6 +230,9 @@ type OctoVaultReconciler struct {
 	// pollWarned UID → 이미 로그로 남긴 해석할 수 없는 pollInterval 값.
 	pollWarned sync.Map
 
+	// migrated 이전 버전의 ownerReference 를 이미 정리한 OctoVault UID. 프로세스마다 한 번만 찾는다.
+	migrated sync.Map
+
 	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
 	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
 	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
@@ -293,6 +296,7 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		r.reservedWarned.Delete(string(ov.UID))
 
 		r.pollWarned.Delete(string(ov.UID))
+		r.migrated.Delete(string(ov.UID))
 
 		return ctrl.Result{}, nil
 	}
@@ -312,6 +316,10 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 	poll := pollIntervalOf(&ov)
 	r.warnUnparsablePollInterval(ctx, &ov)
+
+	// 동기화(GitHub 조회, apply)보다 먼저 한다. 동기화가 실패하는 OctoVault 나 이전 targetName 으로 남은
+	// 대상도 ownerReference 가 남아 있으면 foreground 삭제 때 GC 가 지운다.
+	r.migrateLegacyOwnerRefs(ctx, &ov)
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는

@@ -15,6 +15,7 @@ import (
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 // 대상 소유는 ownerReference 가 아니라 owner-uid 어노테이션으로 표시한다(target_ownership.go).
@@ -158,4 +159,63 @@ func TestTargetChanged_OwnerUID(t *testing.T) {
 	removed := base()
 	delete(removed.Annotations, AnnoOVOwnerUID)
 	assert.True(t, targetChanged(base(), removed), "removing owner-uid by hand must be reverted right away")
+}
+
+// 업그레이드 시점에 동기화가 실패하는 OctoVault 의 대상이나, targetName 을 바꾸기 전 이름으로 남은 대상도
+// 동기화보다 먼저 ownerReference 를 떼야 한다. 남아 있으면 foreground 삭제 때 GC 가 지운다.
+func TestOctoVault_LegacyOwnerReferences_AreMigratedEvenWhenSyncFails(t *testing.T) {
+
+	ctrlTrue := true
+	legacy := func(name string) metav1.ObjectMeta {
+		return metav1.ObjectMeta{
+			Name: name, Namespace: ownershipNS,
+			Labels: map[string]string{LabelOVOwnerNS: ownershipNS, LabelOVOwnerName: "ov-ownership"},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: octovaultv1alpha1.GroupVersion.String(), Kind: "OctoVault", Name: "ov-ownership", UID: types.UID("ov-uid"), Controller: &ctrlTrue},
+			},
+		}
+	}
+
+	oldName := &corev1.ConfigMap{ObjectMeta: legacy("previous-target-name")}
+	rec, cl, ov := newOwnershipReconciler(t, invalidTypeYAML, oldName)
+	require.NoError(t, cl.Create(context.Background(), &corev1.Secret{ObjectMeta: legacy("legacy-secret")}))
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseFailed, updated.Status.Phase, "the sync itself fails")
+
+	for _, obj := range []client.Object{&corev1.ConfigMap{}, &corev1.Secret{}} {
+		name := "previous-target-name"
+		if _, isSecret := obj.(*corev1.Secret); isSecret {
+
+			name = "legacy-secret"
+		}
+
+		require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: name, Namespace: ownershipNS}, obj))
+		assert.Empty(t, obj.GetOwnerReferences(), "%s: the legacy ownerReference must be removed", name)
+		assert.Equal(t, "ov-uid", obj.GetAnnotations()[AnnoOVOwnerUID], "%s: owner-uid must be set", name)
+	}
+}
+
+// 한 번 모두 옮긴 뒤에는 poll 마다 대상을 다시 찾지 않는다.
+func TestOctoVault_LegacyOwnerReferenceMigration_RunsOnce(t *testing.T) {
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ownershipNS}})
+
+	secretLists := 0
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.SecretList); ok {
+
+				secretLists++
+			}
+
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	for range 3 {
+		reconcileOwnership(t, rec, cl, ov)
+	}
+
+	assert.Equal(t, 1, secretLists)
 }

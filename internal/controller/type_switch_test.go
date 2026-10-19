@@ -215,6 +215,10 @@ func (blindSecretCache) Get(ctx context.Context, key client.ObjectKey, obj clien
 	return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
 }
 
+func (blindSecretCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return nil
+}
+
 // Secret 에서 ConfigMap 으로 바뀐 직후에는 메타데이터 캐시에 없더라도 API 로 확인해 남은 Secret 을 지운다.
 func TestOctoVault_TypeSwitch_SecretMissingFromMetadataCacheIsStillCleaned(t *testing.T) {
 

@@ -2,10 +2,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
@@ -162,4 +166,136 @@ func splitOwner(v string) (string, string) {
 	}
 
 	return "", ""
+}
+
+// migrateLegacyOwnerRefs 이 OctoVault 가 만든 대상 중 이전 버전의 ownerReference 가 남은 것을 모두
+// owner-uid 방식으로 옮긴다. owner 라벨로 두 종류를 모두 찾으므로, 동기화가 실패하는 동안이나
+// targetName 을 바꾸기 전 이름으로 남은 대상도 빠지지 않는다.
+//
+// 실패해도 동기화는 계속한다(다음 reconcile 에서 다시 시도한다). 한 번 모두 옮기면 프로세스가
+// 살아 있는 동안 다시 찾지 않는다. 새로 만드는 대상에는 ownerReference 가 붙지 않기 때문이다.
+func (r *OctoVaultReconciler) migrateLegacyOwnerRefs(ctx context.Context, ov *octovaultv1alpha1.OctoVault) {
+	if _, done := r.migrated.Load(string(ov.UID)); done {
+
+		return
+	}
+
+	logger := logf.FromContext(ctx)
+	owned := client.MatchingLabels{LabelOVOwnerNS: ov.Namespace, LabelOVOwnerName: labelSafe(ov.Name)}
+	failed := false
+	migrate := func(obj client.Object) {
+
+		if !dropLegacyOwnerRef(obj, ov.UID) {
+
+			return
+		}
+
+		ann := obj.GetAnnotations()
+		if ann == nil {
+
+			ann = map[string]string{}
+		}
+
+		ann[AnnoOVOwnerUID] = string(ov.UID)
+		obj.SetAnnotations(ann)
+
+		if err := r.Update(ctx, obj); client.IgnoreNotFound(err) != nil {
+
+			logger.Error(err, "failed to migrate target ownerReference", "kind", fmt.Sprintf("%T", obj), "name", obj.GetName())
+			failed = true
+		}
+	}
+
+	var cms corev1.ConfigMapList
+	if err := r.List(ctx, &cms, client.InNamespace(ov.Namespace), owned); err != nil {
+
+		logger.Error(err, "failed to list targets for ownerReference migration")
+		return
+	}
+
+	for i := range cms.Items {
+		migrate(&cms.Items[i])
+	}
+
+	// Secret 은 캐시를 거치지 않으므로 가능하면 메타데이터 캐시로 후보만 고른 뒤, 옮길 것만 읽는다.
+	for _, name := range r.legacyOwnedSecretNames(ctx, ov, owned, &failed) {
+
+		var sec corev1.Secret
+		if err := r.Get(ctx, types.NamespacedName{Namespace: ov.Namespace, Name: name}, &sec); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+
+				failed = true
+			}
+
+			continue
+		}
+
+		migrate(&sec)
+	}
+
+	if !failed {
+
+		r.migrated.Store(string(ov.UID), struct{}{})
+	}
+}
+
+// legacyOwnedSecretNames 이 OctoVault 의 ownerReference 가 남은 대상 Secret 이름.
+func (r *OctoVaultReconciler) legacyOwnedSecretNames(ctx context.Context, ov *octovaultv1alpha1.OctoVault, owned client.MatchingLabels, failed *bool) []string {
+
+	var names []string
+	collect := func(objs []metav1.Object) {
+		for _, o := range objs {
+			if hasOwnerRef(o, ov.UID) {
+
+				names = append(names, o.GetName())
+			}
+		}
+	}
+
+	if r.TargetSecrets != nil {
+
+		var list metav1.PartialObjectMetadataList
+		list.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("SecretList"))
+		if err := r.TargetSecrets.List(ctx, &list, client.InNamespace(ov.Namespace), owned); err != nil {
+
+			*failed = true
+			return nil
+		}
+
+		objs := make([]metav1.Object, 0, len(list.Items))
+		for i := range list.Items {
+			objs = append(objs, &list.Items[i])
+		}
+
+		collect(objs)
+
+		return names
+	}
+
+	var list corev1.SecretList
+	if err := r.List(ctx, &list, client.InNamespace(ov.Namespace), owned); err != nil {
+
+		*failed = true
+		return nil
+	}
+
+	objs := make([]metav1.Object, 0, len(list.Items))
+	for i := range list.Items {
+		objs = append(objs, &list.Items[i])
+	}
+
+	collect(objs)
+
+	return names
+}
+
+func hasOwnerRef(obj metav1.Object, uid types.UID) bool {
+	for _, o := range obj.GetOwnerReferences() {
+		if o.UID == uid {
+
+			return true
+		}
+	}
+
+	return false
 }
