@@ -776,11 +776,9 @@ func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopt
 
 func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1alpha1.OctoVault) error {
 
-	targetNS := ov.Spec.TargetNamespace
-	if targetNS == "" {
-
-		targetNS = ov.Namespace
-	}
+	// 대상은 언제나 OctoVault 와 같은 네임스페이스에 만든다(다른 네임스페이스는 InvalidTargetNamespace 로
+	// 거부한다). spec.targetNamespace 를 나중에 다른 값으로 바꿔도 실제 대상은 원래 네임스페이스에 있다.
+	targetNS := ov.Namespace
 
 	// remove ownerRef가 실제로 뭔가 바꿨는지 반환
 	removeOwner := func(obj metav1.Object) bool {

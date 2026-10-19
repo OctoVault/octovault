@@ -248,3 +248,33 @@ func TestOctoVault_OrphanNotFound_DoesNotBlockDeletion(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, apierrors.IsNotFound(cl.Get(ctx, key, &current)), "the finalizer must be removed")
 }
+
+// targetNamespace 를 다른 값으로 바꾼 뒤(그래서 InvalidTargetNamespace 로 실패하는 중) 지워도,
+// 원래 네임스페이스의 대상을 놓아줘야 한다.
+func TestOctoVault_DeleteAfterTargetNamespaceChange_ReleasesOriginalTarget(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/failure.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	current.Spec.TargetNamespace = "somewhere-else"
+	require.NoError(t, cl.Update(ctx, &current))
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(ctx, key, &current))
+	require.NoError(t, cl.Delete(ctx, &current))
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
+	assert.Empty(t, cm.OwnerReferences, "the original target must be released")
+}
