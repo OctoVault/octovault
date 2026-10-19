@@ -104,7 +104,7 @@ spec:
     - team-a
     - team-b
 ```
-`allowedNamespaces` limits which namespaces' `OctoVault`s may use this `OctoRepository`. The token can read every repository it has access to, so set this in multi-tenant clusters. An `OctoVault` in an unlisted namespace fails with reason `NamespaceNotAllowed`.
+`allowedNamespaces` limits which namespaces' `OctoVault`s may use this `OctoRepository`. Leaving it empty (or unset) allows every namespace. Entries are exact namespace names: no wildcards, prefixes or label selectors. The token can read every repository it has access to, so set this in multi-tenant clusters. An `OctoVault` in an unlisted namespace fails with reason `NamespaceNotAllowed`.
 Removing a namespace from the list stops further syncs, but does not delete targets that were already
 synced there: they keep the last data fetched with this token. Delete those `OctoVault`s (or their
 targets) if the data must not remain in that namespace.
