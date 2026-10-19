@@ -504,8 +504,8 @@ func newTargetSecretCache(mgr ctrl.Manager) (cache.Cache, error) {
 	return c, nil
 }
 
-// maxAWSCacheEntries AWS_CACHE_MAX_ENTRIES 의 상한. 항목마다 복호화된 값이 메모리에 남으므로
-// 실수로 큰 값을 넣어도 컨트롤러가 메모리를 다 쓰지 않게 막는다.
+// maxAWSCacheEntries AWS_CACHE_MAX_ENTRIES 의 상한(provider 마다). 항목마다 조회한 시크릿/파라미터 값이
+// 메모리에 남으므로, 실수로 큰 값을 넣어도 컨트롤러가 메모리를 다 쓰지 않게 막는다.
 const maxAWSCacheEntries = 100_000
 
 // positiveIntEnv 환경 변수가 양의 정수면 그 값, 비어 있으면 def. 값이 있는데 양의 정수가 아니면

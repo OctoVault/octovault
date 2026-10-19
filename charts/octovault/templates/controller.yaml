@@ -42,10 +42,10 @@ spec:
             {{- range .Values.controller.extraArgs }}
             - "{{ . }}"
             {{- end }}
-          {{- /* Integer settings go through int64: an unquoted large number in values would otherwise render as 2e+06. */}}
+          {{- /* Integer settings use octovault.intEnv (see _helpers.tpl). */}}
           env:
             - name: MAX_WORKERS
-              value: {{ .Values.controller.env.MAX_WORKERS | int64 | quote }}
+              value: {{ include "octovault.intEnv" .Values.controller.env.MAX_WORKERS }}
             - name: GIT_CRED_TTL
               value: "{{ .Values.controller.env.GIT_CRED_TTL }}"
             - name: GIT_API_URL
@@ -63,7 +63,7 @@ spec:
             - name: AWS_PS_TTL
               value: "{{ .Values.controller.env.AWS_PS_TTL }}"
             - name: AWS_CACHE_MAX_ENTRIES
-              value: {{ .Values.controller.env.AWS_CACHE_MAX_ENTRIES | int64 | quote }}
+              value: {{ include "octovault.intEnv" .Values.controller.env.AWS_CACHE_MAX_ENTRIES }}
             {{- range .Values.controller.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}

@@ -34,3 +34,17 @@ Otherwise, fall back to .Chart.AppVersion.
 {{- define "octovault.imageTag" -}}
 {{- default .Chart.AppVersion .Values.image.tag -}}
 {{- end }}
+
+{{/*
+octovault.intEnv renders an integer setting as a quoted env value.
+Numbers go through int64, so an unquoted large number does not render as 2e+06.
+Strings are passed through untouched, so an invalid value reaches the controller as written
+and is reported there, instead of being turned into "0".
+*/}}
+{{- define "octovault.intEnv" -}}
+{{- if kindIs "string" . -}}
+{{- quote . -}}
+{{- else -}}
+{{- int64 . | quote -}}
+{{- end -}}
+{{- end }}
