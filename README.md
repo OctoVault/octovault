@@ -108,6 +108,8 @@ kind: Secret
 metadata:
   name: my-org-credentials
   namespace: octovault-system
+  labels:
+    octovault.it/repository: "true"  # recommended: cached, and changes are re-verified right away
 type: Opaque
 stringData:
   username: "octovault"            # optional (defaults to "octovault")
