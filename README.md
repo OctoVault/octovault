@@ -330,9 +330,11 @@ Breaking changes to check before upgrading:
   ```
 
 - **Targets no longer carry an `ownerReference`.** Earlier versions made each target a dependent of its
-  `OctoVault`. On its next sync every existing target is migrated: the `ownerReference` is removed and
-  `octovault.it/owner-uid` is set. Until an `OctoVault` has synced once after the upgrade, a foreground
-  deletion of it can still remove its targets.
+  `OctoVault`. On the first reconcile after the upgrade, before anything is fetched and even if the sync
+  then fails, every target the `OctoVault` created (found through its owner labels, including ones left
+  under a previous `targetName`) is migrated: the `ownerReference` is removed and `octovault.it/owner-uid`
+  is set. A foreground deletion issued before the upgraded controller has reconciled an `OctoVault` can
+  still remove its targets.
 
 ### Manual CRDs
 
