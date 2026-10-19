@@ -171,6 +171,21 @@ func TestOctoVault_OrphanedTargetWithOwnerAnnotation_IsAdopted(t *testing.T) {
 
 	_, updated := reconcileOwnership(t, rec, cl, ov)
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var sec corev1.Secret
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, &sec))
+	assert.Equal(t, string(updated.UID), targetOwnerUID(&sec), "the OctoVault must own the adopted target")
+	assert.Equal(t, "s3cr3t", string(sec.Data["token"]), "the adopted target must carry the synced data")
+}
+
+// targetOwnerUID 대상을 소유한 OctoVault 의 UID. 없으면 "".
+func targetOwnerUID(obj metav1.Object) string {
+	if ref := metav1.GetControllerOf(obj); ref != nil {
+
+		return string(ref.UID)
+	}
+
+	return ""
 }
 
 // 다른 OctoVault 가 남긴 흔적으로는 가져오지 않는다.
