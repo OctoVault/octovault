@@ -48,8 +48,9 @@ func TestStatusWrites_Apply(t *testing.T) {
 	assert.Equal(t, time.Second, res.RequeueAfter, "an earlier requeue is kept")
 
 	forbidden := &statusWrites{err: errForbidden}
-	_, err = forbidden.apply(poll, nil)
-	assert.ErrorIs(t, err, errForbidden, "other failures go through the error backoff")
+	res, err = forbidden.apply(poll, nil)
+	assert.NoError(t, err, "returning an error would discard RequeueAfter for a millisecond backoff")
+	assert.Equal(t, StatusErrorRetryInterval, res.RequeueAfter, "other failures retry after a minute")
 
 	reconcileErr := errors.New("reconcile failed")
 	_, err = conflict.apply(poll, reconcileErr)
@@ -60,12 +61,12 @@ func TestStatusWrites_Apply(t *testing.T) {
 func TestOctoVault_StatusWriteFailure_Retries(t *testing.T) {
 
 	for _, tc := range []struct {
-		name    string
-		err     error
-		wantErr bool
+		name string
+		err  error
+		want time.Duration
 	}{
-		{name: "conflict retries soon", err: errConflict},
-		{name: "forbidden backs off with an error", err: errForbidden, wantErr: true},
+		{name: "conflict retries soon", err: errConflict, want: StatusRetryInterval},
+		{name: "forbidden retries after a minute", err: errForbidden, want: StatusErrorRetryInterval},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -79,20 +80,14 @@ func TestOctoVault_StatusWriteFailure_Retries(t *testing.T) {
 			})
 
 			res, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}})
-			if tc.wantErr {
-
-				require.Error(t, err)
-				return
-			}
-
 			require.NoError(t, err)
-			assert.Equal(t, StatusRetryInterval, res.RequeueAfter)
+			assert.Equal(t, tc.want, res.RequeueAfter)
 		})
 	}
 }
 
-// OctoRepository 에서 conflict 가 아닌 status 기록 실패는 5초 고정 재시도가 아니라 에러 백오프로 간다.
-func TestOctoRepository_NonConflictStatusWriteFailure_ReturnsError(t *testing.T) {
+// OctoRepository 에서 conflict 가 아닌 status 기록 실패는 5초가 아니라 1분 뒤에 다시 시도한다.
+func TestOctoRepository_NonConflictStatusWriteFailure_RetriesAfterAMinute(t *testing.T) {
 
 	ctx := context.Background()
 	scheme := schemeForRepoTests(t)
@@ -121,6 +116,7 @@ func TestOctoRepository_NonConflictStatusWriteFailure_ReturnsError(t *testing.T)
 
 	r := &OctoRepositoryReconciler{Client: cl, Scheme: scheme, Recorder: record.NewFakeRecorder(64), Checker: deniedChecker{}}
 
-	_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "orepo"}})
-	require.ErrorIs(t, err, errForbidden)
+	res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: "orepo"}})
+	require.NoError(t, err)
+	assert.Equal(t, StatusErrorRetryInterval, res.RequeueAfter)
 }

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -15,6 +14,10 @@ import (
 // 기다리면 그동안 상태가 이전 값(Synced)으로 남아 장애가 가려진다. conflict 는 대부분 바로 다시
 // 시도하면 풀리므로 짧게 잡는다.
 const StatusRetryInterval = 5 * time.Second
+
+// StatusErrorRetryInterval conflict 가 아닌 status 기록 실패(RBAC 누락, 5xx 등) 뒤 다시 시도하기까지의 시간.
+// 곧바로 풀리지 않는 오류라 짧게 두드리지 않는다.
+const StatusErrorRetryInterval = time.Minute
 
 // statusWrites reconcile 한 번 동안의 status 기록 실패를 모은다.
 //
@@ -42,24 +45,28 @@ func noteStatusWriteError(ctx context.Context, err error) {
 	}
 }
 
-// apply status 기록이 실패했다면 reconcile 결과를 고친다.
-//   - conflict: StatusRetryInterval 뒤에 다시 본다(원래 더 이르면 그대로).
-//   - 그 밖의 오류(RBAC 누락 등): 에러를 돌려 controller-runtime 의 지수 백오프를 탄다.
-//     고정 간격으로 계속 두드리지 않는다.
+// apply status 기록이 실패했다면, 다시 보는 시점을 원래보다 앞당긴다(원래 더 이르면 그대로).
+//   - conflict: StatusRetryInterval(5s). 대부분 바로 풀린다.
+//   - 그 밖의 오류(RBAC 누락, 5xx 등): StatusErrorRetryInterval(1m).
+//
+// 에러를 반환하지 않는다. 에러를 돌리면 controller-runtime 이 원래의 RequeueAfter 를 버리고
+// 밀리초 단위부터 시작하는 지수 백오프로 재시도해, 처음 몇 초 사이에 reconcile(과 그 안의 GitHub/AWS
+// 호출)이 수십 번 돌 수 있다. rate limit 대기 중이어도 GitHub 는 다시 부르지 않는다(Fetcher 가 기억한다).
 func (w *statusWrites) apply(res ctrl.Result, err error) (ctrl.Result, error) {
 	if err != nil || w.err == nil {
 
 		return res, err
 	}
 
-	if !apierrors.IsConflict(w.err) {
+	retry := StatusErrorRetryInterval
+	if apierrors.IsConflict(w.err) {
 
-		return ctrl.Result{}, fmt.Errorf("status update failed: %w", w.err)
+		retry = StatusRetryInterval
 	}
 
-	if res.RequeueAfter == 0 || res.RequeueAfter > StatusRetryInterval {
+	if res.RequeueAfter == 0 || res.RequeueAfter > retry {
 
-		res.RequeueAfter = StatusRetryInterval
+		res.RequeueAfter = retry
 	}
 
 	return res, nil
