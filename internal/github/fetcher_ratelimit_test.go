@@ -391,3 +391,50 @@ func (l *lockedRT) RoundTrip(r *http.Request) (*http.Response, error) {
 
 	return l.inner.RoundTrip(r)
 }
+
+// rate limit 에 걸린 토큰은 리셋 전까지 GitHub 를 다시 부르지 않는다. 대상 변경 이벤트나 status
+// 기록 재시도로 reconcile 이 poll 주기와 무관하게 돌아도 요청이 나가지 않아야 한다.
+func TestFetcher_DoesNotCallGitHubBeforeRateLimitResets(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	limited := true
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		if limited {
+
+			resp := jsonResp(http.StatusForbidden, map[string]string{"message": "API rate limit exceeded"})
+			resp.Header.Set("X-RateLimit-Remaining", "0")
+			resp.Header.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(60*time.Second).Unix(), 10))
+
+			return resp, nil
+		}
+
+		return jsonResp(http.StatusOK, contentResp{Encoding: "base64", Content: b64WithNewline("a: b"), SHA: "sha"}), nil
+	}
+
+	f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, Now: func() time.Time { return now }})
+
+	_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	_, isLimited := AsRateLimitError(err)
+	require.True(t, isLimited)
+	require.Len(t, stub.requests, 1)
+
+	now = now.Add(20 * time.Second)
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	rle, isLimited := AsRateLimitError(err)
+	require.True(t, isLimited, "still limited: answered from memory")
+	require.Len(t, stub.requests, 1, "no request may be sent before the reset")
+	require.Equal(t, 40*time.Second, rle.RetryAfter, "RetryAfter is the time left")
+
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "other-token")
+	_, isLimited = AsRateLimitError(err)
+	require.True(t, isLimited)
+	require.Len(t, stub.requests, 2, "other tokens have their own limit")
+
+	limited = false
+	now = now.Add(41 * time.Second)
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.NoError(t, err)
+	require.Len(t, stub.requests, 3, "requests resume after the reset")
+}
