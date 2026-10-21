@@ -148,6 +148,14 @@ func TestMapTargetToOctoVault(t *testing.T) {
 	assert.Empty(t, names(target(map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: "short"}, map[string]string{AnnoOVOwnerUID: "someone-else"})),
 		"a different owner UID does not map")
 	assert.Empty(t, names(target(nil, nil)), "objects without owner traces are ignored")
+
+	foreign := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "attacker",
+		Labels: map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: "short"}}}
+	assert.Empty(t, names(foreign), "owner labels pointing at another namespace are ignored")
+
+	foreignAnno := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "attacker",
+		Annotations: map[string]string{AnnoOVOwnerFull: "ns/short"}}}
+	assert.Empty(t, names(foreignAnno), "an owner annotation pointing at another namespace is ignored")
 }
 
 func TestTargetChanged_OwnerUID(t *testing.T) {

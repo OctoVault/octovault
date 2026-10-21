@@ -129,7 +129,10 @@ func (r *OctoVaultReconciler) mapTargetToOctoVault(ctx context.Context, obj clie
 		ns, nameKey = splitOwner(obj.GetAnnotations()[AnnoOVOwnerFull])
 	}
 
-	if ns == "" || nameKey == "" {
+	// 대상은 언제나 OctoVault 와 같은 네임스페이스에 있다. 라벨/어노테이션은 그 객체를 수정할 수 있는
+	// 누구나 붙일 수 있으므로, 다른 네임스페이스를 가리키면 따르지 않는다. 따르면 다른 네임스페이스의
+	// 사용자가 남의 OctoVault reconcile 을 계속 일으켜 그 PAT 의 GitHub 한도를 소모시킬 수 있다.
+	if ns == "" || nameKey == "" || ns != obj.GetNamespace() {
 
 		return nil
 	}
@@ -137,6 +140,8 @@ func (r *OctoVaultReconciler) mapTargetToOctoVault(ctx context.Context, obj clie
 	var list octovaultv1alpha1.OctoVaultList
 	if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
 
+		logf.FromContext(ctx).Error(err, "failed to list OctoVaults for a target event; the target will be checked at the next poll",
+			"namespace", ns, "target", obj.GetName())
 		return nil
 	}
 
