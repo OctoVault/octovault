@@ -55,5 +55,21 @@ metadata:
 rules:
   - nonResourceURLs: ["/metrics"]
     verbs: ["get"]
+{{- with .Values.metrics.readerSubjects }}
+---
+# Binds the metrics-reader ClusterRole to metrics.readerSubjects (e.g. Prometheus' ServiceAccount).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "octovault.fullname" $ }}-metrics-reader
+  labels:
+    {{- include "octovault.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "octovault.fullname" $ }}-metrics-reader
+subjects:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
 {{- end }}
 {{- end }}

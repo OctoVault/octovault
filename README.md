@@ -362,7 +362,8 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 - Prometheus metrics endpoint (HTTP/HTTPS) with optional authz. With `controller.metrics.secure: true` (the
   default), scrapes must present a ServiceAccount token: bind the chart's `<fullname>-metrics-reader`
   ClusterRole (`octovault-metrics-reader` with the default `fullnameOverride`) to your Prometheus
-  ServiceAccount. The chart's ServiceMonitor sends the token.
+  ServiceAccount, for example by listing it in `metrics.readerSubjects` so the chart creates the binding. The
+  chart's ServiceMonitor sends the token.
 - Secure metrics are served over TLS, so Prometheus must also trust the certificate:
   - **Your own certificate (recommended):** put `tls.crt`/`tls.key` in a Secret and set
     `metrics.existingSecret`; the controller then serves it (`--metrics-cert-path`). Earlier chart

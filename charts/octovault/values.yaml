@@ -81,3 +81,8 @@ prometheus:
 metrics:
   existingSecret: ""     # e.g. octovault-metrics-tls (keys: tls.crt, tls.key)
   certPath: "/certs"     # 컨테이너 마운트 경로
+  # Subjects allowed to scrape the secure metrics endpoint (bound to <fullname>-metrics-reader), e.g.
+  # - kind: ServiceAccount
+  #   name: prometheus-k8s
+  #   namespace: monitoring
+  readerSubjects: []
