@@ -25,7 +25,8 @@ import (
 //
 //   - octovault.it/owner-uid: 관리하는 OctoVault 의 UID. 소유 판단의 기준이다.
 //   - octovault.it/owner-ns, octovault.it/owner-name(라벨), octovault.it/owner(어노테이션):
-//     어느 OctoVault 인지 이름으로 찾는 데 쓴다(watch 이벤트 연결, 삭제 시 대상 찾기, 재설치 시 이어받기).
+//     어느 OctoVault 인지 이름으로 찾는 데 쓴다(watch 이벤트 연결, 삭제 시 대상 찾기). 이름만으로 대상을
+//     이어받지는 않는다(claimTarget, octovault.it/adopt).
 //
 // 이전 버전이 붙인 ownerReference(controller=이 OctoVault)도 소유로 인정하고, 다음 갱신 때 뗀다.
 
