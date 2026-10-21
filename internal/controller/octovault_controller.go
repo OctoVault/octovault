@@ -168,6 +168,9 @@ type OctoVaultReconciler struct {
 	AwsSM AwsSecretsProvider
 	AwsPS AwsParamProvider
 
+	// statusBackoff conflict 가 아닌 status 기록 실패가 이어질 때 재시도 간격을 늘린다.
+	statusBackoff statusBackoff
+
 	// reservedWarned UID → 이미 알린, values.yaml 에서 무시한 octovault.it 키 목록.
 	reservedWarned sync.Map
 
@@ -188,7 +191,7 @@ type OctoVaultReconciler struct {
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	// status 기록이 실패하면 poll 주기(기본 5분)까지 기다리지 않고 곧 다시 본다(statusWrites).
-	ctx, writes := trackStatusWrites(ctx)
+	ctx, writes := trackStatusWrites(ctx, &r.statusBackoff, req.String())
 
 	return writes.apply(r.reconcile(ctx, req))
 }

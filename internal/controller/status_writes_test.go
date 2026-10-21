@@ -120,3 +120,35 @@ func TestOctoRepository_NonConflictStatusWriteFailure_RetriesAfterAMinute(t *tes
 	require.NoError(t, err)
 	assert.Equal(t, StatusErrorRetryInterval, res.RequeueAfter)
 }
+
+// conflict 가 아닌 실패가 이어지면 1m, 2m, 4m ... 로 늘리되 poll 주기를 넘지 않고, 성공하면 처음으로 돌아간다.
+func TestStatusWrites_NonConflictFailuresBackOffUpToPoll(t *testing.T) {
+
+	var backoff statusBackoff
+	poll := ctrl.Result{RequeueAfter: 5 * time.Minute}
+	failOnce := func() time.Duration {
+		w := &statusWrites{err: errForbidden, backoff: &backoff, key: "ns/ov"}
+		res, err := w.apply(poll, nil)
+		require.NoError(t, err)
+
+		return res.RequeueAfter
+	}
+
+	assert.Equal(t, time.Minute, failOnce())
+	assert.Equal(t, 2*time.Minute, failOnce())
+	assert.Equal(t, 4*time.Minute, failOnce())
+	assert.Equal(t, 5*time.Minute, failOnce(), "never longer than the poll interval")
+	assert.Equal(t, 5*time.Minute, failOnce())
+
+	conflict := &statusWrites{err: errConflict, backoff: &backoff, key: "ns/ov"}
+	res, _ := conflict.apply(poll, nil)
+	assert.Equal(t, StatusRetryInterval, res.RequeueAfter, "conflicts always retry soon")
+
+	ok := &statusWrites{backoff: &backoff, key: "ns/ov"}
+	_, _ = ok.apply(poll, nil)
+	assert.Equal(t, time.Minute, failOnce(), "a successful write resets the backoff")
+
+	other := &statusWrites{err: errForbidden, backoff: &backoff, key: "ns/other"}
+	res, _ = other.apply(poll, nil)
+	assert.Equal(t, time.Minute, res.RequeueAfter, "each object has its own backoff")
+}

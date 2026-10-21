@@ -66,6 +66,9 @@ type OctoRepositoryReconciler struct {
 
 	Checker OrgAccessChecker
 
+	// statusBackoff conflict 가 아닌 status 기록 실패가 이어질 때 재시도 간격을 늘린다.
+	statusBackoff statusBackoff
+
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 }
@@ -103,7 +106,7 @@ var (
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
-	ctx, writes := trackStatusWrites(ctx)
+	ctx, writes := trackStatusWrites(ctx, &r.statusBackoff, req.String())
 
 	return writes.apply(r.reconcile(ctx, req))
 }
