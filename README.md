@@ -289,8 +289,10 @@ Breaking changes to check before upgrading:
 
 - **Numbers extracted with `jsonKey` keep their original form.** Values used to pass through a float64, so
   large integers lost digits (`12345678901234567890` became `12345678901234567000`) and other forms were
-  normalized (`1e3` became `1000`). They are now copied exactly as written in the JSON, so the resulting
-  Secret value can change on the first sync after upgrading.
+  normalized (`1e3` became `1000`). Numbers now keep their original digits and spelling. When `jsonKey`
+  points at a number, it is copied exactly as written; when it points at an object or array, that value is
+  re-encoded as compact JSON (whitespace dropped, object keys sorted) with its numbers left as written. The
+  resulting Secret value can change on the first sync after upgrading.
 
 ### Manual CRDs
 
