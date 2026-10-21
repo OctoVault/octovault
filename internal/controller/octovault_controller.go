@@ -70,7 +70,9 @@ const (
 	LabelOVOwnerName = "octovault.it/owner-name" // <name>
 	AnnoOVOwnerFull  = "octovault.it/owner"      // "<ns>/<name>"
 	AnnoOVRetainedBy = "octovault.it/retained-from"
-	FinalizerOV      = "octovault.it/finalizer"
+	// AnnoOVAdopt 이 값이 "true" 인 기존 대상만 OctoVault 가 이어받는다(claimTarget).
+	AnnoOVAdopt = "octovault.it/adopt"
+	FinalizerOV = "octovault.it/finalizer"
 )
 
 func labelSafe(v string) string {
@@ -738,26 +740,22 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 
 // claimTarget 기존 대상을 이 OctoVault 가 관리해도 되는지 판단한다.
 //
-// 이미 controller 이면 그대로 쓴다. controller 가 없고, 이 OctoVault(같은 <ns>/<name>)가
-// 남긴 흔적이 있으면 controller ref 를 다시 붙여 가져온다(adopted=true). 흔적은 두 가지다.
-//   - retained-from: 삭제 시 orphanTargets 가 남긴다. 같은 이름으로 다시 만들면(재설치) 이어받는다.
-//   - owner 어노테이션: 생성 시 붙인다. --cascade=orphan 처럼 GC 가 ownerRef 만 지운 경우를 덮는다.
+// 이미 controller 이면 그대로 쓴다. controller 가 없고 octovault.it/adopt: "true" 가 붙어 있으면
+// controller ref 를 붙여 이어받는다(adopted=true). 삭제 후 재설치(Helm/Argo)처럼 남겨진 대상을 다시
+// 관리하려면 이 어노테이션을 한 번 붙이면 된다. 이어받으면서 대상의 어노테이션은 values.yaml 기준으로
+// 다시 쓰이므로 adopt 는 한 번만 쓰인다.
 //
-// 다른 controller 가 있거나 흔적이 없으면 owned=false 다. 흔적은 그 리소스를 수정할 수 있는
-// 주체만 남길 수 있으므로, OctoVault 생성 권한만으로 남의 리소스를 가져올 수는 없다.
+// retained-from 이나 owner 어노테이션 같은 이름 기반 흔적만으로는 이어받지 않는다. 그 흔적은 컨트롤러가
+// 직접 남기므로, 그것만 믿으면 OctoVault 생성 권한만 있는 사용자가 지워진 OctoVault 와 같은 이름으로
+// 만들어, 수정 권한이 없는 Secret 을 덮어쓸 수 있다. adopt 는 그 대상을 수정할 수 있는 주체만 붙일 수
+// 있고, values.yaml 로는 넣을 수 없다(isReservedKey).
 func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
 	if metav1.IsControlledBy(obj, ov) {
 
 		return false, true
 	}
 
-	if metav1.GetControllerOf(obj) != nil {
-
-		return false, false
-	}
-
-	ann := obj.GetAnnotations()
-	if ann[AnnoOVRetainedBy] != ov.Namespace+"/"+ov.Name && ann[AnnoOVOwnerFull] != ov.Namespace+"/"+labelSafe(ov.Name) {
+	if metav1.GetControllerOf(obj) != nil || obj.GetAnnotations()[AnnoOVAdopt] != "true" {
 
 		return false, false
 	}

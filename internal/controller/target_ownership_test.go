@@ -137,12 +137,39 @@ func TestOctoVault_SecretOwnedByAnotherOctoVault_IsNotOverwritten(t *testing.T) 
 }
 
 // 삭제 후 같은 이름으로 다시 만든 OctoVault 는 이전에 남겨 둔 대상을 이어받아야 한다.
-func TestOctoVault_RetainedTarget_IsAdoptedByRecreatedOctoVault(t *testing.T) {
+// 남겨진 대상은 같은 이름의 OctoVault 라도 adopt 없이는 이어받지 않는다(이름만으로는 덮어쓸 수 없다).
+func TestOctoVault_RetainedTarget_WithoutAdopt_IsNotAdopted(t *testing.T) {
 
 	existing := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ownershipTarget, Namespace: ownershipNS,
-			Annotations: map[string]string{AnnoOVRetainedBy: ownershipNS + "/ov-ownership"},
+			Annotations: map[string]string{
+				AnnoOVRetainedBy: ownershipNS + "/ov-ownership",
+				AnnoOVOwnerFull:  ownershipNS + "/ov-ownership",
+			},
+		},
+		Data: map[string]string{"old": "data"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, &cm))
+	assert.Equal(t, map[string]string{"old": "data"}, cm.Data, "the retained target must not be overwritten")
+}
+
+// adopt 어노테이션이 붙은 남겨진 대상은 이어받고, adopt 는 한 번 쓰인 뒤 사라진다.
+func TestOctoVault_RetainedTarget_WithAdopt_IsAdopted(t *testing.T) {
+
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{
+				AnnoOVRetainedBy: ownershipNS + "/ov-ownership",
+				AnnoOVAdopt:      "true",
+			},
 		},
 		Data: map[string]string{"old": "data"},
 	}
@@ -155,16 +182,17 @@ func TestOctoVault_RetainedTarget_IsAdoptedByRecreatedOctoVault(t *testing.T) {
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, &cm))
 	assert.True(t, metav1.IsControlledBy(&cm, &updated), "controller ref must point at the new OctoVault")
 	assert.NotContains(t, cm.Annotations, AnnoOVRetainedBy)
+	assert.NotContains(t, cm.Annotations, AnnoOVAdopt, "adopt is consumed")
 	assert.Equal(t, "bar", cm.Data["foo"])
 }
 
-// --cascade=orphan 처럼 ownerRef 만 사라지고 생성 시 붙인 owner 어노테이션이 남은 경우도 이어받는다.
-func TestOctoVault_OrphanedTargetWithOwnerAnnotation_IsAdopted(t *testing.T) {
+// --cascade=orphan 처럼 ownerRef 만 사라진 대상도 adopt 를 붙이면 이어받는다.
+func TestOctoVault_OrphanedTargetWithAdopt_IsAdopted(t *testing.T) {
 
 	existing := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ownershipTarget, Namespace: ownershipNS,
-			Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-ownership"},
+			Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-ownership", AnnoOVAdopt: "true"},
 		},
 	}
 	rec, cl, ov := newOwnershipReconciler(t, sampleSecretYAML, existing)
@@ -188,13 +216,17 @@ func targetOwnerUID(obj metav1.Object) string {
 	return ""
 }
 
-// 다른 OctoVault 가 남긴 흔적으로는 가져오지 않는다.
-func TestOctoVault_TargetRetainedByAnotherOctoVault_IsNotAdopted(t *testing.T) {
+// 다른 주체가 controller 인 대상은 adopt 가 있어도 가져오지 않는다.
+func TestOctoVault_ControlledTargetWithAdopt_IsNotAdopted(t *testing.T) {
 
+	ctrlTrue := true
 	existing := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ownershipTarget, Namespace: ownershipNS,
-			Annotations: map[string]string{AnnoOVRetainedBy: ownershipNS + "/someone-else"},
+			Annotations: map[string]string{AnnoOVAdopt: "true"},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "apps/v1", Kind: "Deployment", Name: "other", UID: types.UID("other-uid"), Controller: &ctrlTrue,
+			}},
 		},
 	}
 	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
@@ -221,6 +253,12 @@ func TestOctoVault_DeleteAndRecreate_ResumesManagingTarget(t *testing.T) {
 	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
 	require.NoError(t, err)
 	require.True(t, apierrors.IsNotFound(cl.Get(ctx, key, &current)), "the OctoVault must be gone after its finalizer ran")
+
+	// 남겨진 대상을 다시 관리하려면 그 대상을 수정할 수 있는 사람이 adopt 를 붙인다.
+	var retained corev1.ConfigMap
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &retained))
+	retained.Annotations[AnnoOVAdopt] = "true"
+	require.NoError(t, cl.Update(ctx, &retained))
 
 	recreated := ov.DeepCopy()
 	recreated.ResourceVersion = ""
