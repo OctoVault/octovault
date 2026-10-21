@@ -267,3 +267,35 @@ func TestAccessChecker_ReportsPublicOnlyScope(t *testing.T) {
 		})
 	}
 }
+
+// 개인 계정(조직 프로브 404, 사용자 프로브 200)에서도 public 전용 토큰을 감지하고, 캐시 적중에서도 유지해야 한다.
+func TestAccessChecker_PersonalAccount_ReportsPublicOnlyScope(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Path, "/orgs/") {
+
+			return jsonResp(http.StatusNotFound, nil), nil
+		}
+
+		resp := jsonResp(http.StatusOK, []any{})
+		resp.Header.Set("X-OAuth-Scopes", "public_repo, gist")
+
+		return resp, nil
+	}
+
+	c := newTestChecker(t, stub, &now)
+
+	res, err := c.CheckAccess(ctx, "github.com/someone", "tok")
+	require.NoError(t, err)
+	require.True(t, res.LimitedToPublic)
+	require.Len(t, stub.requests, 2, "org probe, then user probe")
+
+	now = now.Add(11 * time.Minute)
+	res, err = c.CheckAccess(ctx, "github.com/someone", "tok")
+	require.NoError(t, err)
+	require.True(t, res.LimitedToPublic)
+	require.Len(t, stub.requests, 3, "a known personal account goes straight to the user probe")
+}
