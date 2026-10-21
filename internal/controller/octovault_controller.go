@@ -27,6 +27,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 	awsps "github.com/octovault/octovault/internal/aws/parameter_store"
@@ -158,6 +159,9 @@ type OctoVaultReconciler struct {
 
 	AwsSM AwsSecretsProvider
 	AwsPS AwsParamProvider
+
+	// reservedWarned UID → 이미 알린, values.yaml 에서 무시한 octovault.it 키 목록.
+	reservedWarned sync.Map
 }
 
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults,verbs=get;list;watch;create;update;patch;delete
@@ -247,6 +251,8 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		return res, nil
 	}
+
+	r.warnReservedKeys(ctx, &ov, doc)
 
 	targetNS := ov.Spec.TargetNamespace
 	if targetNS == "" {

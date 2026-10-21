@@ -1,7 +1,13 @@
 package controller
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -129,4 +135,47 @@ func TestMergeMap_DropsReservedUserKeys(t *testing.T) {
 		"example.com/octovault.it":         "ok",
 		"notoctovault.it/key":              "ok",
 	}, got)
+}
+
+// values.yaml 의 octovault.it 키는 무시하되, 한 번은 알려야 한다.
+func TestOctoVault_ReservedKeysInValues_AreReportedOnce(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/reserved.yaml"
+	values := []byte(`
+metadata:
+  type: ConfigMap
+  labels:
+    octovault.it/repository: "true"
+  annotations:
+    octovault.it/retained-from: other/ov
+spec:
+  data:
+    - key: foo
+      value: bar
+`)
+
+	rec, _, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: values}, rev: "rev1"})
+	recorder := rec.Recorder.(*record.FakeRecorder)
+	req := reconcile.Request{NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}}
+
+	warnings := func() int {
+		n := 0
+		for len(recorder.Events) > 0 {
+			if e := <-recorder.Events; strings.HasPrefix(e, "Warning ReservedKeysIgnored") {
+
+				n++
+				assert.Contains(t, e, "octovault.it/repository,octovault.it/retained-from")
+			}
+		}
+
+		return n
+	}
+
+	for range 3 {
+		_, err := rec.Reconcile(ctx, req)
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, warnings(), "reported once, not on every poll")
 }
