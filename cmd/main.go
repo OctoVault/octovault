@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -415,6 +416,17 @@ func main() {
 
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
+	}
+
+	// 옛 CRD 로는 allowedNamespaces 가 조용히 무시되므로(제한 해제) 확인되면 시작하지 않는다.
+	if err := verifyCRDs(context.Background(), mgr.GetAPIReader()); err != nil {
+		if errors.Is(err, errStaleCRD) {
+
+			setupLog.Error(err, "refusing to start")
+			os.Exit(1)
+		}
+
+		setupLog.Info("could not verify the installed CRDs; continuing", "error", err.Error())
 	}
 
 	setupLog.Info("starting manager")
