@@ -252,3 +252,66 @@ func TestStaleSecretExpected(t *testing.T) {
 	ov.Status.Conditions = []metav1.Condition{{Type: CondReady, Reason: ReasonStaleTargetCleanupFailed}}
 	assert.True(t, staleSecretExpected(ov))
 }
+
+// metadataSecretCache fake client 의 Secret 메타데이터를 돌려주는 메타데이터 캐시. Get 횟수를 센다.
+type metadataSecretCache struct {
+	cache.Cache
+	src  client.Client
+	gets int
+}
+
+func (c *metadataSecretCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+
+	c.gets++
+
+	var sec corev1.Secret
+	if err := c.src.Get(ctx, key, &sec); err != nil {
+
+		return err
+	}
+
+	sec.ObjectMeta.DeepCopyInto(&obj.(*metav1.PartialObjectMetadata).ObjectMeta)
+
+	return nil
+}
+
+func (c *metadataSecretCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return nil
+}
+
+// 평소(직전 출력이 ConfigMap 이고 정리 실패도 없음)에는 남은 Secret 을 메타데이터 캐시로 찾아 지운다.
+func TestOctoVault_StaleSecret_IsDeletedThroughMetadataCache(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/switch.yaml"
+
+	fetcher := &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"}
+	rec, cl, ov := newUpdateMetaReconciler(t, path, fetcher)
+	metaCache := &metadataSecretCache{src: cl}
+	rec.TargetSecrets = metaCache
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	target := client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}
+
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	// 이 OctoVault 가 소유한 Secret 이 같은 이름으로 남아 있는 상황(예: 이전 정리 흔적이 사라진 뒤).
+	var current octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &current))
+	var cm corev1.ConfigMap
+	require.NoError(t, cl.Get(ctx, target, &cm))
+	require.NoError(t, cl.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: target.Name, Namespace: target.Namespace,
+		Labels:          cm.Labels,
+		Annotations:     cm.Annotations,
+		OwnerReferences: cm.OwnerReferences,
+	}}))
+
+	_, err = rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	assert.Positive(t, metaCache.gets, "the steady-state path must use the metadata cache")
+	err = cl.Get(ctx, target, &corev1.Secret{})
+	assert.True(t, apierrors.IsNotFound(err), "the stale Secret must be deleted: %v", err)
+	require.NoError(t, cl.Get(ctx, target, &corev1.ConfigMap{}), "the ConfigMap stays")
+}
