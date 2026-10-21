@@ -110,23 +110,33 @@ func (c *Cache[V]) Get(ctx context.Context, key string, load func(context.Contex
 		return zero, err
 	}
 
-	ch := c.group.DoChan(key, func() (any, error) {
-		// 앞선 호출이 방금 채웠을 수 있다.
-		if v, ok := c.lookup(key); ok {
+	ch := c.group.DoChan(key, func() (v any, err error) {
+		// 이 함수는 singleflight 가 따로 띄운 고루틴에서 돈다. 여기서 난 panic 은 controller-runtime 의
+		// reconcile recover 가 잡지 못하고 프로세스를 죽이므로, load 뿐 아니라 저장과 eviction 훅까지
+		// 이 함수 전체의 panic 을 에러로 바꾼다. 이전처럼 해당 reconcile 만 실패한다.
+		defer func() {
+			if r := recover(); r != nil {
 
-			return v, nil
+				err = fmt.Errorf("aws lookup panicked: %v", r)
+			}
+		}()
+
+		// 앞선 호출이 방금 채웠을 수 있다.
+		if cached, ok := c.lookup(key); ok {
+
+			return cached, nil
 		}
 
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.loadTimeout)
 		defer cancel()
 
-		v, err := safeLoad(lctx, load)
+		loaded, err := load(lctx)
 		if err == nil {
 
-			c.store(key, v)
+			c.store(key, loaded)
 		}
 
-		return v, err
+		return loaded, err
 	})
 
 	select {
@@ -191,19 +201,4 @@ func (c *Cache[V]) dropIfUnchanged(key string, seen entry[V]) {
 	c.entries.DropIf(key, func(cur entry[V]) bool {
 		return cur.exp.Equal(seen.exp)
 	})
-}
-
-// safeLoad load 의 panic 을 에러로 바꾼다.
-//
-// load 는 singleflight 가 따로 띄운 고루틴에서 돈다. 여기서 난 panic 은 controller-runtime 의
-// reconcile recover 가 잡지 못하고 프로세스를 죽인다. 이전처럼 해당 reconcile 만 실패하게 한다.
-func safeLoad[V any](ctx context.Context, load func(context.Context) (V, error)) (v V, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-
-			err = fmt.Errorf("aws lookup panicked: %v", r)
-		}
-	}()
-
-	return load(ctx)
 }

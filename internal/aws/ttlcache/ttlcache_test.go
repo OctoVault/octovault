@@ -310,3 +310,16 @@ func TestCache_EvictHookIgnoresExpiredEntries(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, evicted, "a still-valid entry pushed out is")
 }
+
+// eviction 훅에서 난 panic 도 프로세스를 죽이지 않고 에러로 돌아와야 한다.
+func TestCache_EvictHookPanicBecomesError(t *testing.T) {
+
+	ctx := context.Background()
+	c := New(time.Minute, WithMaxEntries[int](1), WithEvictHook[int](func(int) { panic("hook boom") }))
+
+	_, err := c.Get(ctx, "a", func(context.Context) (int, error) { return 1, nil })
+	require.NoError(t, err)
+
+	_, err = c.Get(ctx, "b", func(context.Context) (int, error) { return 2, nil })
+	require.ErrorContains(t, err, "aws lookup panicked: hook boom")
+}
