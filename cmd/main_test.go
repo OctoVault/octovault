@@ -27,7 +27,7 @@ func TestSecretCacheIsLabelScoped(t *testing.T) {
 	cfg, err := env.Start()
 	if err != nil {
 
-		t.Skipf("envtest unavailable (run 'make setup-envtest'): %v", err)
+		skipOrFailEnvtest(t, err)
 	}
 	t.Cleanup(func() { _ = env.Stop() })
 
@@ -88,4 +88,18 @@ func firstEnvtestBinaryDir() string {
 	}
 
 	return ""
+}
+
+// skipOrFailEnvtest envtest 를 띄우지 못하면 실패로 본다. 조용히 skip 하면 "ok" 로 보여, 캐시 범위처럼
+// 실제 API 서버로만 확인할 수 있는 동작이 검증되지 않은 채 넘어간다. 바이너리 없이 돌려야 하면
+// OCTOVAULT_SKIP_ENVTEST=1 로 명시적으로 건너뛴다(make test 와 CI 는 바이너리를 받아 둔다).
+func skipOrFailEnvtest(t *testing.T, err error) {
+	t.Helper()
+
+	if os.Getenv("OCTOVAULT_SKIP_ENVTEST") == "1" {
+
+		t.Skipf("envtest unavailable and OCTOVAULT_SKIP_ENVTEST=1: %v", err)
+	}
+
+	t.Fatalf("envtest unavailable (run 'make setup-envtest', or set OCTOVAULT_SKIP_ENVTEST=1 to skip): %v", err)
 }
