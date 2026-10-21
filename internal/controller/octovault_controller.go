@@ -95,12 +95,15 @@ func (r *OctoVaultReconciler) warnUnparsablePollInterval(ctx context.Context, ov
 		"spec.pollInterval %q cannot be used (%v); polling every %s instead", v, err, DefaultPollInterval)
 }
 
-// pollIntervalOf spec.pollInterval 을 해석한다. 비었거나 해석할 수 없으면 기본값,
-// 하한보다 짧으면(0s 포함) 하한을 쓴다.
+// pollIntervalOf spec.pollInterval 을 해석한다. 비었거나, 0 이거나, 해석할 수 없으면 기본값을 쓴다.
+// 0 보다 크고 하한보다 짧으면 하한을 쓴다.
+//
+// 0 을 기본값으로 보는 것은 예전 동작 그대로다. 하한으로 올리면 0m 을 쓰던 OctoVault 가 업그레이드 후
+// 5m 대신 30s 마다 polling 해 호출이 10배가 된다.
 func pollIntervalOf(ov *octovaultv1alpha1.OctoVault) time.Duration {
 
 	v, err := time.ParseDuration(strings.TrimSpace(ov.Spec.PollInterval))
-	if err != nil {
+	if err != nil || v == 0 {
 
 		return DefaultPollInterval
 	}
