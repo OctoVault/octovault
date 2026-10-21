@@ -572,10 +572,11 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				bytes[k] = val
 
 				extRefs = append(extRefs, octovaultv1alpha1.ExternalRefStatus{
-					Provider:      "AwsSecretsManager",
-					Name:          name,
-					VersionID:     meta.VersionID,
-					VersionStages: meta.VersionStages,
+					Provider:  "AwsSecretsManager",
+					Name:      name,
+					VersionID: meta.VersionID,
+					// 순서가 바뀌어도 같은 상태로 보도록 정렬한다(AWS 가 순서를 보장하지 않는다).
+					VersionStages: sortedCopy(meta.VersionStages),
 					Key:           k,
 				})
 
@@ -1183,4 +1184,16 @@ func (r *OctoVaultReconciler) maxWorkers() int {
 	}
 
 	return 1
+}
+
+func sortedCopy(in []string) []string {
+	if len(in) == 0 {
+
+		return nil
+	}
+
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+
+	return out
 }
