@@ -438,3 +438,30 @@ func TestFetcher_DoesNotCallGitHubBeforeRateLimitResets(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, stub.requests, 3, "requests resume after the reset")
 }
+
+// rate limit 중 같은 제한에 대한 메시지는 시간이 지나도 같아야 한다(바뀌면 그때마다 status 를 다시 쓴다).
+func TestFetcher_RateLimitMessageIsStableWhileLimited(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		resp := jsonResp(http.StatusForbidden, map[string]string{"message": "API rate limit exceeded"})
+		resp.Header.Set("X-RateLimit-Remaining", "0")
+		resp.Header.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(60*time.Second).Unix(), 10))
+
+		return resp, nil
+	}
+
+	f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, Now: func() time.Time { return now }})
+
+	_, _, _, first := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.Error(t, first)
+
+	now = now.Add(17*time.Second + 123*time.Millisecond)
+	_, _, _, second := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.Error(t, second)
+
+	require.Equal(t, first.Error(), second.Error())
+	require.Contains(t, first.Error(), "retry after 2023-11-14T22:14:20Z")
+}
