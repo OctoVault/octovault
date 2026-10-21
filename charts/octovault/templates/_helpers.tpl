@@ -39,12 +39,15 @@ Otherwise, fall back to .Chart.AppVersion.
 octovault.intEnv renders an integer setting as a quoted env value.
 Numbers go through int64, so an unquoted large number does not render as 2e+06.
 Strings are passed through untouched, so an invalid value reaches the controller as written
-and is reported there, instead of being turned into "0".
+and is reported there, instead of being turned into "0". Other values (1.5, true, null) fail rendering
+instead of silently becoming 1, 0 or "".
 */}}
 {{- define "octovault.intEnv" -}}
 {{- if kindIs "string" . -}}
 {{- quote . -}}
-{{- else -}}
+{{- else if or (kindIs "int" .) (kindIs "int64" .) (and (kindIs "float64" .) (eq (float64 .) (float64 (int64 .)))) -}}
 {{- int64 . | quote -}}
+{{- else -}}
+{{- fail (printf "integer setting has a non-integer value %v (%s); use a whole number" . (kindOf .)) -}}
 {{- end -}}
 {{- end }}
