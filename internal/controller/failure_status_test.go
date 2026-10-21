@@ -3,10 +3,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/tools/record"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -211,6 +213,16 @@ func TestOctoVault_OrphanFailure_KeepsFinalizer(t *testing.T) {
 
 	require.NoError(t, cl.Get(ctx, key, &current), "the OctoVault must still exist")
 	assert.Contains(t, current.Finalizers, FinalizerOV)
+
+	recorder := rec.Recorder.(*record.FakeRecorder)
+	found := false
+	for len(recorder.Events) > 0 {
+		if e := <-recorder.Events; strings.HasPrefix(e, "Warning ReleaseTargetsFailed") {
+
+			found = true
+		}
+	}
+	assert.True(t, found, "a stuck deletion must be visible as a Warning event")
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))

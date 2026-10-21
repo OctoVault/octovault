@@ -190,6 +190,9 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			if err := r.orphanTargets(ctx, &ov); err != nil {
 
 				logger.Error(err, "failed to orphan targets; keeping finalizer")
+				// 삭제가 끝나지 않는 이유를 kubectl describe 로 볼 수 있게 남긴다(같은 이벤트는 모아서 센다).
+				r.Recorder.Eventf(&ov, corev1.EventTypeWarning, "ReleaseTargetsFailed",
+					"deletion is waiting: could not release targets: %v", err)
 				return ctrl.Result{}, err
 			}
 
