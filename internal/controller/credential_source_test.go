@@ -68,4 +68,5 @@ func TestOctoVault_TokenInAnnotation_IsIgnored(t *testing.T) {
 	require.NoError(t, cl.Get(ctx, key, &updated))
 	assert.Equal(t, octovaultv1alpha1.OVPhaseFailed, updated.Status.Phase)
 	assert.Equal(t, "SecretMissingPassword", updated.Status.Conditions[0].Reason)
+	assert.Contains(t, updated.Status.Message, "annotation octovault.it/password is no longer read", "the message must say how to fix it")
 }
