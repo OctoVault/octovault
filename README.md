@@ -382,7 +382,7 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 
 **If you still exhaust the limit**, in order of effect:
 
-1. Raise `spec.pollInterval` — cost scales linearly with it.
+1. Raise `spec.pollInterval` — cost is inversely proportional to it (doubling the interval halves the requests).
 2. Keep `GIT_REVISION_FROM_COMMIT=false` and `GIT_SCHEMA_FILE` unset (both are defaults).
 3. Raise `GIT_CRED_TTL`.
 4. Split `OctoVault` resources across several `OctoRepository` objects with different PATs —
