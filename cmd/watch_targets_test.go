@@ -56,7 +56,7 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 	cfg, err := env.Start()
 	if err != nil {
 
-		t.Skipf("envtest unavailable (run 'make setup-envtest'): %v", err)
+		skipOrFailEnvtest(t, err)
 	}
 	t.Cleanup(func() { _ = env.Stop() })
 
