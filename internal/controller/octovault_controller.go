@@ -91,6 +91,8 @@ func (r *OctoVaultReconciler) warnUnparsablePollInterval(ctx context.Context, ov
 
 	logf.FromContext(ctx).Info("spec.pollInterval cannot be parsed; using the default",
 		"pollInterval", v, "default", DefaultPollInterval, "error", err.Error())
+	r.Recorder.Eventf(ov, corev1.EventTypeWarning, "InvalidPollInterval",
+		"spec.pollInterval %q cannot be used (%v); polling every %s instead", v, err, DefaultPollInterval)
 }
 
 // pollIntervalOf spec.pollInterval 을 해석한다. 비었거나 해석할 수 없으면 기본값,

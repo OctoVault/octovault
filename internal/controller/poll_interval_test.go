@@ -9,6 +9,7 @@ import (
 	"github.com/go-logr/logr/funcr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -57,6 +58,16 @@ func TestOctoVault_UnparsablePollInterval_IsLoggedOnce(t *testing.T) {
 	}
 
 	assert.Len(t, lines, 1)
+
+	recorder := rec.Recorder.(*record.FakeRecorder)
+	warnings := 0
+	for len(recorder.Events) > 0 {
+		if e := <-recorder.Events; strings.HasPrefix(e, "Warning InvalidPollInterval") {
+
+			warnings++
+		}
+	}
+	assert.Equal(t, 1, warnings, "a Warning event is emitted once as well")
 
 	// 값이 정상으로 돌아오면 기록을 지운다. 다시 잘못된 값이 되면 다시 알린다.
 	require.NoError(t, cl.Get(ctx, key, &current))
