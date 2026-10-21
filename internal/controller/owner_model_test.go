@@ -2,8 +2,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -226,4 +230,30 @@ func TestOctoVault_LegacyOwnerReferenceMigration_RunsOnce(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, secretLists)
+}
+
+// 대상 Update 가 conflict 로 실패하면(캐시가 늦음) 실패 상태로 바꾸지 않고 곧 다시 시도한다.
+func TestOctoVault_TargetUpdateConflict_RetriesWithoutFailing(t *testing.T) {
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ownershipNS}})
+
+	_, synced := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, synced.Status.Phase)
+
+	// 값을 바꿔 Update 가 필요하게 만들고, 그 Update 를 conflict 로 실패시킨다.
+	rec.Git = &staticFetcher{files: map[string][]byte{ownershipPath: []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: foo\n      value: changed\n")}, rev: "rev2"}
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+
+				return apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, obj.GetName(), errors.New("stale"))
+			}
+
+			return c.Update(ctx, obj, opts...)
+		},
+	})
+
+	res, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, StatusRetryInterval, res.RequeueAfter)
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase, "a conflict is not a failure")
 }

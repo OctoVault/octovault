@@ -597,6 +597,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
+			// conflict 는 캐시가 방금 쓴 내용을 아직 받지 못했다는 뜻이다(예: 마이그레이션 직후).
+			// 실패로 기록하지 않고 곧 다시 시도한다.
+			if apierrors.IsConflict(err) {
+
+				return appliedOutput{}, ctrl.Result{RequeueAfter: StatusRetryInterval}, nil
+			}
+
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return appliedOutput{}, ctrl.Result{}, err
 		}
@@ -734,6 +741,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
+			}
+
+			// conflict 는 캐시가 방금 쓴 내용을 아직 받지 못했다는 뜻이다(예: 마이그레이션 직후).
+			// 실패로 기록하지 않고 곧 다시 시도한다.
+			if apierrors.IsConflict(err) {
+
+				return appliedOutput{}, ctrl.Result{RequeueAfter: StatusRetryInterval}, nil
 			}
 
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed",
