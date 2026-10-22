@@ -157,7 +157,8 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 	}, 20*time.Second, 100*time.Millisecond,
 		"a hand edit to managed data must be reverted without waiting for the poll interval")
 
-	// Secret 에서 ConfigMap 으로 바꾸면, 남은 Secret 은 메타데이터 캐시로 확인해 지워진다.
+	// Secret 에서 ConfigMap 으로 바꾸면 남은 Secret 이 지워진다. 직전 출력이 Secret 이므로 이 정리는
+	// 메타데이터 캐시가 아니라 API 로 직접 확인하는 경로를 탄다(라벨이 바뀐 Secret 도 찾기 위해).
 	secKey := client.ObjectKey{Name: "out-sec", Namespace: "default"}
 	fetcher.set("sec.yaml", []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: a\n      value: b\n"))
 
@@ -172,4 +173,19 @@ func TestDeletedTargetsAreRestoredByWatch(t *testing.T) {
 
 		return secretGone && configMapThere
 	}, 20*time.Second, 100*time.Millisecond, "the previous Secret must be deleted after switching to ConfigMap")
+
+	// 평소(직전 출력이 ConfigMap)에 이 OctoVault 소유의 Secret 이 다시 생기면, Secret watch 이벤트로 바로
+	// reconcile 되고 메타데이터 캐시(실제 informer)로 확인해 지운다.
+	var switched corev1.ConfigMap
+	require.NoError(t, direct.Get(ctx, secKey, &switched))
+	require.NoError(t, direct.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: secKey.Name, Namespace: secKey.Namespace,
+		Labels:          switched.Labels,
+		Annotations:     switched.Annotations,
+		OwnerReferences: switched.OwnerReferences,
+	}}))
+
+	require.Eventually(t, func() bool {
+		return apierrors.IsNotFound(direct.Get(ctx, secKey, &corev1.Secret{}))
+	}, 20*time.Second, 100*time.Millisecond, "a reappearing owned Secret must be deleted through the metadata cache")
 }
