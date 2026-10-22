@@ -807,16 +807,20 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 	if !adopted &&
 		reflect.DeepEqual(cm.Labels, desiredLabels) &&
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
-		reflect.DeepEqual(cm.Data, data) {
+		reflect.DeepEqual(cm.Data, data) &&
+		len(cm.BinaryData) == 0 {
 		return nil
 	}
 
 	// OctoVault owns the resource it creates; labels/annotations are fully replaced
 	// by the desired state (system + user-specified keys). Third-party keys not
 	// declared in values.yaml are intentionally pruned on each reconcile.
+	// values.yaml 은 binaryData 를 만들지 않으므로, 손으로 넣은 binaryData 도 지운다(watch 가 반응하는 변경을
+	// 실제로 되돌리지 않으면 이벤트마다 reconcile 만 돈다).
 	cm.Labels = desiredLabels
 	cm.Annotations = desiredAnnotations
 	cm.Data = data
+	cm.BinaryData = nil
 
 	return r.Update(ctx, &cm)
 }

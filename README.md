@@ -28,8 +28,10 @@ It also supports external secret sources referenced from your Git-backed `values
     - records status and emits Events.
 
 It keeps the target resource in sync on a timer (`spec.pollInterval`), and also reacts right away when the
-target `ConfigMap`/`Secret` is deleted, when `ConfigMap` data is edited by hand, or when OctoVault's own
-labels/annotations or controller reference are changed. Other drift (labels added by third parties, `Secret`
+target `ConfigMap`/`Secret` is deleted, when `ConfigMap` data (or binaryData) is edited by hand, or when
+OctoVault's own labels/annotations are changed. Removing or replacing the target's controller reference also
+triggers a reconcile, but the target then counts as not owned by this `OctoVault` (`TargetNotOwned`) instead
+of being corrected. Other drift (labels added by third parties, `Secret`
 data edits) is corrected at the next poll, so labels injected by mutating webhooks or policy engines don't
 cause a reconcile loop. Something that keeps rewriting the `ConfigMap` data will still trigger a reconcile
 (and a conditional GitHub request) every time it does so; don't point another controller at the same data. If `metadata.type` switches between `ConfigMap` and
