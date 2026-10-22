@@ -19,7 +19,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -418,15 +417,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 옛 CRD 로는 allowedNamespaces 가 조용히 무시되므로(제한 해제) 확인되면 시작하지 않는다.
+	// 옛 CRD 로는 allowedNamespaces 가 조용히 무시되므로(제한 해제) 시작하지 않는다. CRD 를 읽지 못해
+	// 확인할 수 없는 경우(권한 없음 등)도 같다. 그 상태로 시작하면 옛 CRD 인지 알 수 없어 제한이 풀린 채
+	// 돌 수 있다. 일시적인 오류라면 재시작하면서 다시 확인한다.
 	if err := verifyCRDs(context.Background(), mgr.GetAPIReader()); err != nil {
-		if errors.Is(err, errStaleCRD) {
 
-			setupLog.Error(err, "refusing to start")
-			os.Exit(1)
-		}
-
-		setupLog.Info("could not verify the installed CRDs; continuing", "error", err.Error())
+		setupLog.Error(err, "refusing to start: the installed CRDs could not be confirmed to be current")
+		os.Exit(1)
 	}
 
 	setupLog.Info("starting manager")

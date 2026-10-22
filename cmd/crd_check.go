@@ -31,7 +31,7 @@ var (
 // helm upgrade 는 차트의 crds/ 를 갱신하지 않는다. 옛 CRD 에서는 API 서버가 모르는 필드를 지워 버리므로
 // allowedNamespaces 가 조용히 사라지고, 빈 목록은 "모든 네임스페이스 허용"이라 제한이 풀린 채 동작한다.
 // 그래서 필드가 없는 것을 확인하면 errStaleCRD 를 돌려 시작을 막는다(fail-closed).
-// CRD 를 읽지 못하면(권한 등) 판단할 수 없으므로 그 오류를 그대로 돌려준다. 호출자는 경고만 남긴다.
+// CRD 를 읽지 못하면(권한 등) 판단할 수 없으므로 그 오류를 그대로 돌려준다. 호출자는 이때도 시작하지 않는다.
 func verifyCRDs(ctx context.Context, c client.Reader) error {
 
 	crd := &unstructured.Unstructured{}
