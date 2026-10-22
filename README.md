@@ -284,8 +284,20 @@ Breaking changes to check before upgrading:
 - **Credentials from Secret annotations are no longer read.** Earlier versions let an `OctoVault` take the
   token from the `octovault.it/password` annotation, and the encoding from `octovault.it/passwordEncoding`,
   when the Secret's data had no `password`. Move both into the Secret's data (`password`, `passwordEncoding`).
-  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or authentication fails with 401 if only the
-  encoding was in an annotation.
+  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or with `SecretLegacyAnnotation` if the token
+  was moved but the encoding is still only in the annotation; both messages say what to move.
+- **Existing objects not created by OctoVault are no longer overwritten.** Earlier versions overwrote any
+  `ConfigMap`/`Secret` with the target name. An `OctoVault` whose target was not created by it now fails with
+  `TargetNotOwned`. To find them:
+
+  ```bash
+  kubectl get octovault -A -o json | jq -r '.items[]
+    | select(any(.status.conditions[]?; .type=="Ready" and .reason=="TargetNotOwned"))
+    | "\(.metadata.namespace)/\(.metadata.name) -> \(.spec.targetName)"'
+  ```
+
+  Rename the target, delete the existing object, or annotate it with `octovault.it/adopt: "true"` to let the
+  `OctoVault` take it over.
 
 - **Numbers extracted with `jsonKey` keep their original form.** Values used to pass through a float64, so
   large integers lost digits (`12345678901234567890` became `12345678901234567000`) and other forms were
