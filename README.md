@@ -159,7 +159,7 @@ spec:
   gitRef: "release-2025-09"           # optional (branch/tag/SHA)
   targetName: "app-config"            # ConfigMap/Secret name
   targetNamespace: "demo"             # optional (defaults to this namespace)
-  pollInterval: "5m"                  # s/m/h duration, e.g. 90s, 5m, 1h30m (default 5m, minimum 30s; 0 means the default)
+  pollInterval: "5m"                  # s/m/h duration, e.g. 90s, 5m, 1h30m (default 5m, minimum 30s; 0s/0m means the default)
 ```
 Status (abbrev.):
 ```yaml
