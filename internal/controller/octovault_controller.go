@@ -196,6 +196,9 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 		}
 
+		// UID 별로 남겨 둔 기록을 지워, 지워진 OctoVault 의 항목이 메모리에 쌓이지 않게 한다.
+		r.reservedWarned.Delete(string(ov.UID))
+
 		return ctrl.Result{}, nil
 	}
 
