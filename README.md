@@ -36,6 +36,8 @@ data edits) is corrected at the next poll, so labels injected by mutating webhoo
 cause a reconcile loop. Something that keeps rewriting the `ConfigMap` data will still trigger a reconcile
 (and a conditional GitHub request) every time it does so; don't point another controller at the same data. If `metadata.type` switches between `ConfigMap` and
 `Secret`, the previous object (if this `OctoVault` controls it) is deleted.
+The one exception to "right away": while the credential's token is rate limited (`RateLimited`), nothing is
+fetched, so a deleted target is recreated only after the limit resets.
 
 Polling is designed to stay well inside GitHub's PAT rate limit: each poll issues a
 single `contents` request, sent as a conditional request with `If-None-Match`. GitHub
