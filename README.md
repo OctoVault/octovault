@@ -336,6 +336,16 @@ Breaking changes to check before upgrading:
   is set. A foreground deletion issued before the upgraded controller has reconciled an `OctoVault` can
   still remove its targets.
 
+  **Rolling back and forward again.** Rolling back to an earlier release works: that release does not check
+  ownership, so it keeps syncing the targets. But it rewrites each target's annotations and drops
+  `octovault.it/owner-uid`, and it does not put the `ownerReference` back. After upgrading again those targets
+  carry no ownership marker, so their `OctoVault`s fail with `TargetNotOwned`. Mark them for adoption once,
+  as someone allowed to edit them:
+
+  ```bash
+  kubectl annotate configmap,secret -A -l app.kubernetes.io/managed-by=octovault octovault.it/adopt=true --overwrite
+  ```
+
 ### Manual CRDs
 
 If you prefer manual steps:
