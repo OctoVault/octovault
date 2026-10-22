@@ -39,8 +39,8 @@ Otherwise, fall back to .Chart.AppVersion.
 octovault.intEnv renders an integer setting as a quoted env value.
 Numbers go through int64, so an unquoted large number does not render as 2e+06.
 Strings are passed through untouched, so an invalid value reaches the controller as written
-and is reported there, instead of being turned into "0". Other values (1.5, true, null) fail rendering
-instead of silently becoming 1, 0 or "".
+and is reported there, instead of being turned into "0". Other values (1.5, true) fail rendering
+instead of silently becoming 1 or 0. Call it through octovault.intEnvFrom, which handles a missing key.
 */}}
 {{- define "octovault.intEnv" -}}
 {{- if kindIs "string" . -}}
@@ -49,5 +49,22 @@ instead of silently becoming 1, 0 or "".
 {{- int64 . | quote -}}
 {{- else -}}
 {{- fail (printf "integer setting has a non-integer value %v (%s); use a whole number" . (kindOf .)) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+octovault.intEnvFrom renders key from the env map with octovault.intEnv, or default when the key is missing
+(e.g. helm upgrade --reuse-values from a release that predates the setting; a null in values also removes
+the key). A value that is present is passed through as is, so 0 or "" still reaches the controller and lets
+a --max-workers flag in extraArgs take over, as it did before this helper.
+Usage: include "octovault.intEnvFrom" (list .Values.controller.env "MAX_WORKERS" 1)
+*/}}
+{{- define "octovault.intEnvFrom" -}}
+{{- $env := index . 0 | default dict -}}
+{{- $key := index . 1 -}}
+{{- if hasKey $env $key -}}
+{{- include "octovault.intEnv" (index $env $key) -}}
+{{- else -}}
+{{- include "octovault.intEnv" (index . 2) -}}
 {{- end -}}
 {{- end }}

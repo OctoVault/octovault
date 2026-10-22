@@ -42,11 +42,11 @@ spec:
             {{- range .Values.controller.extraArgs }}
             - "{{ . }}"
             {{- end }}
-          {{- /* Integer settings use octovault.intEnv (see _helpers.tpl). A missing value (e.g. helm upgrade
+          {{- /* Integer settings use octovault.intEnvFrom (see _helpers.tpl). A missing key (e.g. helm upgrade
                  --reuse-values from a release that predates the setting) falls back to the chart default. */}}
           env:
             - name: MAX_WORKERS
-              value: {{ include "octovault.intEnv" (.Values.controller.env.MAX_WORKERS | default 1) }}
+              value: {{ include "octovault.intEnvFrom" (list .Values.controller.env "MAX_WORKERS" 1) }}
             - name: GIT_CRED_TTL
               value: "{{ .Values.controller.env.GIT_CRED_TTL }}"
             - name: GIT_API_URL
@@ -64,7 +64,7 @@ spec:
             - name: AWS_PS_TTL
               value: "{{ .Values.controller.env.AWS_PS_TTL }}"
             - name: AWS_CACHE_MAX_ENTRIES
-              value: {{ include "octovault.intEnv" (.Values.controller.env.AWS_CACHE_MAX_ENTRIES | default 1024) }}
+              value: {{ include "octovault.intEnvFrom" (list .Values.controller.env "AWS_CACHE_MAX_ENTRIES" 1024) }}
             {{- range .Values.controller.extraEnv }}
             - name: {{ .name }}
               value: {{ .value | quote }}
