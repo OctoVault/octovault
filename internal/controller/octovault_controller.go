@@ -343,7 +343,7 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 
 	// "owner/repo" 의 owner 가 OctoRepository 의 조직과 다르면 조용히 다른 조직에서 받아오게 된다.
 	// 사용자가 적은 저장소와 실제로 읽는 저장소가 같아야 한다. 자격증명을 읽기 전에 거른다.
-	if owner, ok := repositoryOwner(ov.Spec.Repository); ok && !strings.EqualFold(owner, strings.TrimPrefix(orepo.Spec.Organization, "github.com/")) {
+	if owner, ok := repositoryOwner(ov.Spec.Repository); ok && !strings.EqualFold(owner, strings.TrimPrefix(strings.TrimSpace(orepo.Spec.Organization), "github.com/")) {
 
 		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "RepositoryOwnerMismatch",
 			fmt.Sprintf("repository owner %q does not match OctoRepository organization %q", owner, orepo.Spec.Organization)))

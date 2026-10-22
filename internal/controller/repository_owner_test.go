@@ -112,3 +112,25 @@ func TestOctoVault_RepositoryOwnerMismatch_StopsBeforeCredentialsAndFetch(t *tes
 	assert.Zero(t, secretReads, "the credentials Secret must not be read")
 	assert.Zero(t, fetcher.calls, "GitHub must not be called")
 }
+
+// organization 앞뒤 공백은 다른 경로처럼 무시한다.
+func TestOctoVault_RepositoryOwner_IgnoresOrganizationWhitespace(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/owner.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+
+	var orepo octovaultv1alpha1.OctoRepository
+	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo))
+	orepo.Spec.Organization = " github.com/test-org "
+	require.NoError(t, cl.Update(ctx, &orepo))
+
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	_, err := rec.Reconcile(ctx, reconcile.Request{NamespacedName: key})
+	require.NoError(t, err)
+
+	var updated octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(ctx, key, &updated))
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+}
