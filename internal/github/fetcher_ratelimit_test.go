@@ -465,3 +465,20 @@ func TestFetcher_RateLimitMessageIsStableWhileLimited(t *testing.T) {
 	require.Equal(t, first.Error(), second.Error())
 	require.Contains(t, first.Error(), "retry after 2023-11-14T22:14:20Z")
 }
+
+// 풀린 기록은 새 기록을 넣을 때 정리되어, 다시 쓰이지 않는 토큰의 기록이 쌓이지 않는다.
+func TestFetcher_ExpiredRateLimitEntriesAreSwept(t *testing.T) {
+
+	now := time.Unix(1_700_000_000, 0)
+	f := NewFetcher(Options{Now: func() time.Time { return now }})
+
+	f.rememberLimit("old-token", &RateLimitError{RetryAfter: time.Minute})
+	now = now.Add(2 * time.Minute)
+	f.rememberLimit("new-token", &RateLimitError{RetryAfter: time.Minute})
+
+	f.limitedMu.Lock()
+	defer f.limitedMu.Unlock()
+	require.Len(t, f.limitedAt, 1)
+	_, stillThere := f.limitedAt[limitKey("old-token")]
+	require.False(t, stillThere)
+}

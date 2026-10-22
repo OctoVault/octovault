@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -436,20 +438,39 @@ type commitResp struct {
 // rememberLimit 이 토큰은 RetryAfter 가 지날 때까지 다시 부르지 않는다.
 func (f *Fetcher) rememberLimit(token string, rle *RateLimitError) {
 
-	cred := credentialLabel(token)
+	cred := limitKey(token)
+	now := f.now()
 
 	f.limitedMu.Lock()
 	defer f.limitedMu.Unlock()
 
+	// 다시 쓰이지 않는 토큰의 기록이 쌓이지 않도록, 새로 넣을 때 이미 풀린 기록을 지운다.
+	for k, until := range f.limitedAt {
+		if !until.After(now) {
+
+			delete(f.limited, k)
+			delete(f.limitedAt, k)
+		}
+	}
+
 	f.limited[cred] = rle
-	f.limitedAt[cred] = f.now().Add(rle.RetryAfter)
+	f.limitedAt[cred] = now.Add(rle.RetryAfter)
+}
+
+// limitKey rate limit 기억의 키. 메트릭 라벨용 지문(credentialLabel, 32비트)은 짧아서 두 토큰이 겹치면
+// 다른 토큰까지 막히므로, 전체 해시를 쓴다. 토큰 원문은 남기지 않는다.
+func limitKey(token string) string {
+
+	sum := sha256.Sum256([]byte(token))
+
+	return hex.EncodeToString(sum[:])
 }
 
 // stillLimited 이 토큰이 아직 rate limit 에 걸려 있으면, 요청을 보내지 않고 돌려줄 에러.
 // 남은 시간을 RetryAfter 로 다시 계산한다. 풀렸으면 기록을 지우고 nil.
 func (f *Fetcher) stillLimited(token string) *RateLimitError {
 
-	cred := credentialLabel(token)
+	cred := limitKey(token)
 
 	f.limitedMu.Lock()
 	defer f.limitedMu.Unlock()
