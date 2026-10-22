@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -50,4 +51,10 @@ func TestVerifyCRDs(t *testing.T) {
 
 	err = verifyCRDs(ctx, c)
 	require.True(t, errors.Is(err, errStaleCRD), "a stale CRD must be reported: %v", err)
+
+	// 실행 중에 옛 CRD 가 다시 적용되면 주기 확인이 매니저를 멈춘다.
+	watchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	err = watchCRDs(c, 10*time.Millisecond)(watchCtx)
+	require.True(t, errors.Is(err, errStaleCRD), "the periodic re-check must stop the manager: %v", err)
 }

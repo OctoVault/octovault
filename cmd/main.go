@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -423,6 +424,12 @@ func main() {
 	if err := verifyCRDs(context.Background(), mgr.GetAPIReader()); err != nil {
 
 		setupLog.Error(err, "refusing to start: the installed CRDs could not be confirmed to be current")
+		os.Exit(1)
+	}
+
+	if err := mgr.Add(manager.RunnableFunc(watchCRDs(mgr.GetAPIReader(), crdRecheckInterval))); err != nil {
+
+		setupLog.Error(err, "unable to set up the CRD re-check")
 		os.Exit(1)
 	}
 

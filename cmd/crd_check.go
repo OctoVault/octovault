@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // RBAC(이 CRD 하나에 대한 get)는 internal/controller/octorepository_controller.go 의 마커에 있다.
@@ -59,4 +61,42 @@ func verifyCRDs(ctx context.Context, c client.Reader) error {
 	return fmt.Errorf("%w: %s has no spec.allowedNamespaces, so the API server would silently drop it and "+
 		"every namespace would be allowed; apply the CRDs before starting this version "+
 		"(kubectl apply -f charts/octovault/crds/)", errStaleCRD, octoRepositoryCRD)
+}
+
+// crdRecheckInterval 실행 중에 CRD 를 다시 확인하는 주기.
+const crdRecheckInterval = time.Minute
+
+// watchCRDs 실행 중에도 CRD 를 주기적으로 다시 확인한다. 옛 CRD 가 다시 적용되면(예: 옛 차트로 crds/ 를
+// 손으로 apply) API 서버가 allowedNamespaces 를 지워 돌려주므로, errStaleCRD 를 돌려 매니저를 멈춘다.
+// 재시작하면 시작 시 확인에서 막힌다. 그 사이(최대 interval) 열리는 틈은 남는다.
+//
+// CRD 를 읽지 못한 것(일시적인 API 오류 등)으로는 멈추지 않는다. 시작할 때 한 번 확인했고, API 서버가
+// 잠깐 흔들릴 때마다 재시작하면 그쪽이 더 큰 장애가 된다.
+func watchCRDs(c client.Reader, interval time.Duration) func(context.Context) error {
+
+	return func(ctx context.Context) error {
+
+		t := time.NewTicker(interval)
+		defer t.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+
+				return nil
+			case <-t.C:
+			}
+
+			err := verifyCRDs(ctx, c)
+			if errors.Is(err, errStaleCRD) {
+
+				return err
+			}
+
+			if err != nil && ctx.Err() == nil {
+
+				logf.FromContext(ctx).Error(err, "failed to re-check the installed CRDs; will retry")
+			}
+		}
+	}
 }
