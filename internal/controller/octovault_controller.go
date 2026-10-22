@@ -233,6 +233,9 @@ type OctoVaultReconciler struct {
 	// migrated 이전 버전의 ownerReference 를 이미 정리한 OctoVault UID. 프로세스마다 한 번만 찾는다.
 	migrated sync.Map
 
+	// targetConflicts UID → 대상 Update 가 연속으로 conflict 난 횟수(tolerateTargetConflict).
+	targetConflicts sync.Map
+
 	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
 	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
 	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
@@ -297,6 +300,7 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 		r.pollWarned.Delete(string(ov.UID))
 		r.migrated.Delete(string(ov.UID))
+		r.targetConflicts.Delete(string(ov.UID))
 
 		return ctrl.Result{}, nil
 	}
@@ -389,6 +393,8 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 		return res, nil
 	}
+
+	r.targetConflicts.Delete(string(ov.UID))
 
 	// 5) 방금 적용한 것과 다른 종류의 대상이 이 OctoVault 소유로 남아 있으면 지운다(metadata.type 전환).
 	//
@@ -597,9 +603,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
-			// conflict 는 캐시가 방금 쓴 내용을 아직 받지 못했다는 뜻이다(예: 마이그레이션 직후).
-			// 실패로 기록하지 않고 곧 다시 시도한다.
-			if apierrors.IsConflict(err) {
+			if apierrors.IsConflict(err) && r.tolerateTargetConflict(ov) {
 
 				return appliedOutput{}, ctrl.Result{RequeueAfter: StatusRetryInterval}, nil
 			}
@@ -743,9 +747,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
-			// conflict 는 캐시가 방금 쓴 내용을 아직 받지 못했다는 뜻이다(예: 마이그레이션 직후).
-			// 실패로 기록하지 않고 곧 다시 시도한다.
-			if apierrors.IsConflict(err) {
+			if apierrors.IsConflict(err) && r.tolerateTargetConflict(ov) {
 
 				return appliedOutput{}, ctrl.Result{RequeueAfter: StatusRetryInterval}, nil
 			}
@@ -823,6 +825,27 @@ func (r *OctoVaultReconciler) syncedStatus(ov *octovaultv1alpha1.OctoVault, out 
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
 	return next
+}
+
+// maxSilentTargetConflicts 대상 Update conflict 를 실패로 기록하지 않고 다시 시도하는 연속 횟수.
+const maxSilentTargetConflicts = 3
+
+// tolerateTargetConflict 대상 Update 의 conflict 를 조용히 다시 시도해도 되면 true.
+//
+// conflict 는 대상이 그사이 바뀌었다는 뜻이다. 대부분 곧 풀린다(ConfigMap 은 캐시가 방금 쓴 내용을 아직
+// 받지 못한 경우, 예: 마이그레이션 직후). 하지만 다른 컨트롤러가 같은 대상을 계속 고치면 영원히
+// 이어지므로, 연속 maxSilentTargetConflicts 번을 넘으면 ApplyFailed 로 드러낸다. 성공하면 초기화한다.
+func (r *OctoVaultReconciler) tolerateTargetConflict(ov *octovaultv1alpha1.OctoVault) bool {
+
+	n := 1
+	if v, ok := r.targetConflicts.Load(string(ov.UID)); ok {
+
+		n = v.(int) + 1
+	}
+
+	r.targetConflicts.Store(string(ov.UID), n)
+
+	return n <= maxSilentTargetConflicts
 }
 
 // effectiveRef 동기화에 쓴 ref. 둘 다 비어 있으면 저장소의 기본 브랜치를 뜻하는 빈 문자열이다.

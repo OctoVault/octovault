@@ -20,6 +20,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // 대상 소유는 ownerReference 가 아니라 owner-uid 어노테이션으로 표시한다(target_ownership.go).
@@ -253,9 +254,20 @@ func TestOctoVault_TargetUpdateConflict_RetriesWithoutFailing(t *testing.T) {
 		},
 	})
 
-	res, updated := reconcileOwnership(t, rec, cl, ov)
-	assert.Equal(t, StatusRetryInterval, res.RequeueAfter)
-	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase, "a conflict is not a failure")
+	for i := range maxSilentTargetConflicts {
+		res, updated := reconcileOwnership(t, rec, cl, ov)
+		assert.Equal(t, StatusRetryInterval, res.RequeueAfter, "attempt %d", i+1)
+		assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase, "a conflict is not a failure at first")
+	}
+
+	// 계속 이어지면(다른 컨트롤러와 경합) 조용히 넘기지 않고 드러낸다.
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	_, err := rec.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+	require.Error(t, err)
+
+	var updated octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(context.Background(), key, &updated))
+	assert.Equal(t, "ApplyFailed", updated.Status.Conditions[0].Reason, "persistent conflicts must become visible")
 }
 
 // owner-uid 가 살아 있는 다른 OctoVault 를 가리키면, adopt 가 있어도 가져오지 않는다.
