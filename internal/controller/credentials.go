@@ -15,7 +15,7 @@ var (
 	errMissingPassword         = errors.New("missing 'password' key")
 	errInvalidPasswordEncoding = errors.New("invalid base64 in 'password' key")
 
-	// errLegacyPasswordEncoding 토큰은 data 로 옮겼지만 base64 표시는 이전 버전의 어노테이션에만 남은 상태.
+	// errLegacyPasswordEncoding 토큰은 data 로 옮겼지만 base64 표시(passwordEncoding=base64)는 이전 버전의 어노테이션에만 남은 상태.
 	// 그대로 쓰면 base64 문자열을 토큰으로 보내 401 만 받으므로, 원인을 알려 주고 멈춘다.
 	errLegacyPasswordEncoding = errors.New("passwordEncoding is only set in the octovault.it/passwordEncoding " +
 		"annotation, which is no longer read; move it to data.passwordEncoding")
@@ -34,7 +34,8 @@ func tokenFromSecret(s *corev1.Secret) (string, error) {
 		return "", errMissingPassword
 	}
 
-	if secretValue(s, "passwordEncoding") == "" && s.Annotations["octovault.it/passwordEncoding"] != "" {
+	// 동작을 바꾸는 값은 base64 뿐이다. plain 같은 다른 값이 남아 있으면 지금처럼 그대로 쓰면 된다.
+	if secretValue(s, "passwordEncoding") == "" && s.Annotations["octovault.it/passwordEncoding"] == "base64" {
 
 		return "", errLegacyPasswordEncoding
 	}

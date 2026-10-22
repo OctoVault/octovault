@@ -285,7 +285,8 @@ Breaking changes to check before upgrading:
   token from the `octovault.it/password` annotation, and the encoding from `octovault.it/passwordEncoding`,
   when the Secret's data had no `password`. Move both into the Secret's data (`password`, `passwordEncoding`).
   Otherwise the `OctoVault` fails with `SecretMissingPassword`, or with `SecretLegacyAnnotation` if the token
-  was moved but the encoding is still only in the annotation; both messages say what to move.
+  was moved but `passwordEncoding: base64` is still only in the annotation (any other annotation value is
+  ignored, since only `base64` changes how the token is read); both messages say what to move.
 - **Existing objects not created by OctoVault are no longer overwritten.** Earlier versions overwrote any
   `ConfigMap`/`Secret` with the target name. An `OctoVault` whose target was not created by it now fails with
   `TargetNotOwned`. To find them:

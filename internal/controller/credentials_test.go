@@ -25,6 +25,8 @@ func TestTokenFromSecret(t *testing.T) {
 		{name: "bad base64", data: map[string][]byte{"password": []byte("!!"), "passwordEncoding": []byte("base64")}, reason: "SecretInvalidPasswordEncoding"},
 		{name: "encoding only in legacy annotation", data: map[string][]byte{"password": []byte("dG9r")},
 			annotations: map[string]string{"octovault.it/passwordEncoding": "base64"}, reason: "SecretLegacyAnnotation"},
+		{name: "non-base64 legacy annotation is ignored", data: map[string][]byte{"password": []byte("tok")},
+			annotations: map[string]string{"octovault.it/passwordEncoding": "plain"}, token: "tok"},
 		{name: "data encoding wins over legacy annotation", data: map[string][]byte{"password": []byte("dG9r"), "passwordEncoding": []byte("base64")},
 			annotations: map[string]string{"octovault.it/passwordEncoding": "base64"}, token: "tok"},
 	}
