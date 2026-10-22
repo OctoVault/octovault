@@ -14,7 +14,15 @@ import (
 var (
 	errMissingPassword         = errors.New("missing 'password' key")
 	errInvalidPasswordEncoding = errors.New("invalid base64 in 'password' key")
+
+	// errLegacyPasswordEncoding 토큰은 data 로 옮겼지만 base64 표시는 이전 버전의 어노테이션에만 남은 상태.
+	// 그대로 쓰면 base64 문자열을 토큰으로 보내 401 만 받으므로, 원인을 알려 주고 멈춘다.
+	errLegacyPasswordEncoding = errors.New("passwordEncoding is only set in the octovault.it/passwordEncoding " +
+		"annotation, which is no longer read; move it to data.passwordEncoding")
 )
+
+// legacyAnnotationKeys 이전 버전이 토큰을 읽던 Secret 어노테이션. 지금은 읽지 않는다.
+var legacyAnnotationKeys = []string{"octovault.it/password", "octovault.it/passwordEncoding"}
 
 // tokenFromSecret data.password 를 읽고 passwordEncoding=base64 면 디코딩한다.
 // 실패하면 errMissingPassword 또는 errInvalidPasswordEncoding 을 감싼 에러를 반환한다.
@@ -24,6 +32,11 @@ func tokenFromSecret(s *corev1.Secret) (string, error) {
 	if token == "" {
 
 		return "", errMissingPassword
+	}
+
+	if secretValue(s, "passwordEncoding") == "" && s.Annotations["octovault.it/passwordEncoding"] != "" {
+
+		return "", errLegacyPasswordEncoding
 	}
 
 	if secretValue(s, "passwordEncoding") != "base64" {
@@ -42,12 +55,27 @@ func tokenFromSecret(s *corev1.Secret) (string, error) {
 
 // tokenFailureReason tokenFromSecret 실패를 condition reason 으로 바꾼다.
 func tokenFailureReason(err error) string {
-	if errors.Is(err, errMissingPassword) {
-
+	switch {
+	case errors.Is(err, errMissingPassword):
 		return "SecretMissingPassword"
+	case errors.Is(err, errLegacyPasswordEncoding):
+		return "SecretLegacyAnnotation"
+	default:
+		return "SecretInvalidPasswordEncoding"
+	}
+}
+
+// legacyAnnotationHint 토큰이 없을 때 덧붙일 안내. 예전처럼 어노테이션에 넣어 둔 경우 옮기라고 알려 준다.
+func legacyAnnotationHint(sec *corev1.Secret) string {
+	for _, k := range legacyAnnotationKeys {
+		if sec.Annotations[k] != "" {
+
+			return fmt.Sprintf(": annotation %s is no longer read, move the token into the Secret's data "+
+				"(data.password, data.passwordEncoding)", k)
+		}
 	}
 
-	return "SecretInvalidPasswordEncoding"
+	return ""
 }
 
 // secretValue Secret data 의 값. 비어 있으면 "".

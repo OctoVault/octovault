@@ -225,7 +225,7 @@ func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context,
 	pwd, err := tokenFromSecret(sec)
 	if err != nil {
 
-		msg := "secret missing password"
+		msg := "secret missing password" + legacyAnnotationHint(sec)
 		if !errors.Is(err, errMissingPassword) {
 
 			// err 가 이미 "invalid base64 in 'password' key: <원인>" 이므로 같은 말을 덧붙이지 않는다.

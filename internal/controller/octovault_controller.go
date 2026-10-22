@@ -372,9 +372,13 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 	token, err := tokenFromSecret(&cred)
 	if err != nil {
 
-		msg := missingPasswordMessage(&cred, orepo.Name)
-		if !errors.Is(err, errMissingPassword) {
-
+		var msg string
+		switch {
+		case errors.Is(err, errMissingPassword):
+			msg = fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", cred.Name, orepo.Name) + legacyAnnotationHint(&cred)
+		case errors.Is(err, errLegacyPasswordEncoding):
+			msg = fmt.Sprintf("Secret %q for OctoRepository %q: %v", cred.Name, orepo.Name, err)
+		default:
 			msg = fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)
 		}
 
@@ -1154,20 +1158,4 @@ func (r *OctoVaultReconciler) maxWorkers() int {
 	}
 
 	return 1
-}
-
-// legacyAnnotationKeys 이전 버전이 토큰을 읽던 Secret 어노테이션. 지금은 읽지 않는다.
-var legacyAnnotationKeys = []string{"octovault.it/password", "octovault.it/passwordEncoding"}
-
-// missingPasswordMessage 토큰이 없을 때의 메시지. 예전처럼 어노테이션에 넣어 둔 경우는 옮기라고 알려 준다.
-func missingPasswordMessage(sec *corev1.Secret, orepoName string) string {
-	for _, k := range legacyAnnotationKeys {
-		if sec.Annotations[k] != "" {
-
-			return fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q: annotation %s is no longer read, move the token into the Secret's data (data.password, data.passwordEncoding)",
-				sec.Name, orepoName, k)
-		}
-	}
-
-	return fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", sec.Name, orepoName)
 }
