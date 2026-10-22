@@ -312,6 +312,12 @@ func main() {
 	var validator controller.Validator // TODO: 스키마 검증기 주입 지점
 
 	schemaFileName := strings.TrimSpace(os.Getenv("GIT_SCHEMA_FILE"))
+	if schemaFileName != "" && validator == nil {
+
+		// 쓰지 않을 스키마 때문에 요청을 보내거나, 그 조회가 실패했다고 동기화를 실패시키지 않는다.
+		setupLog.Info("GIT_SCHEMA_FILE is ignored: no schema validator is configured", "file", schemaFileName)
+		schemaFileName = ""
+	}
 
 	// GIT_REVISION_FROM_COMMIT=true 로 두면 revision 을 커밋 SHA 로 기록하되
 	// 폴링마다 /commits 요청이 1개 추가된다. 기본은 contents 응답의 blob SHA 를 쓴다.

@@ -345,7 +345,7 @@ kubectl apply -f config/crd/bases/      # CRDs
 | `GIT_API_URL`            | GitHub API base (`https://api.github.com` or GHES URL)        | `https://api.github.com` |
 | `GIT_REF`                | **Global** default git ref if `OctoVault.spec.gitRef` is empty | *(none)*                 |
 | `GIT_REVISION_FROM_COMMIT` | Record `observedRevision` as the latest commit SHA. Costs **one extra request per poll**; when `false`, the blob SHA from the `contents` response is used instead. | `false`                  |
-| `GIT_SCHEMA_FILE`        | Schema file to fetch alongside `values.yaml`. Empty disables the request. Only useful once a validator is wired in — otherwise the response is fetched and discarded. A missing schema file is ignored; any other failure to fetch it (over 1MB, a symlink, no access) fails the sync. | *(none)*                 |
+| `GIT_SCHEMA_FILE`        | Schema file to fetch alongside `values.yaml`. Empty disables the request. Ignored (nothing is fetched) until a validator is wired in; this build has none. With a validator, a missing schema file is ignored; any other failure to fetch it (over 1MB, a symlink, no access) fails the sync. | *(none)*                 |
 | `AWS_REGION`             | Region override for AWS SM (empty → SDK default/IRSA)         | *(auto)*                 |
 | `AWS_SM_TTL`             | AWS SM cache TTL (Go duration)                                | `1m`                     |
 | `AWS_PS_TTL`             | AWS Parameter Store cache TTL (Go duration)                   | `1m`                     |
@@ -363,7 +363,7 @@ referencing the same `OctoRepository` shares that single budget. Requests that r
 | Source | Requests | Notes |
 |---|---|---|
 | `OctoVault` — fetch `values.yaml` | 1 | `0` charged when unchanged (`304` via `If-None-Match`) |
-| `OctoVault` — schema file | 0 | Only when `GIT_SCHEMA_FILE` is set |
+| `OctoVault` — schema file | 0 | Only when `GIT_SCHEMA_FILE` is set and a validator is configured |
 | `OctoVault` — commit revision | 0 | Only when `GIT_REVISION_FROM_COMMIT=true` |
 | `OctoRepository` — PAT access probe | ≤1 per `GIT_CRED_TTL` | Cached; `2` on the first check of a personal (non-org) account |
 

@@ -87,7 +87,7 @@ type OctoVaultSpec struct {
 	// +optional
 	TargetNamespace string `json:"targetNamespace,omitempty"`
 
-	// 폴링 간격. s/m/h 단위의 Go duration (예: 90s, 5m, 1h30m). Default: 5m(0 도 기본값), 최소 30s.
+	// 폴링 간격. s/m/h 단위의 Go duration (예: 90s, 5m, 1h30m). Default: 5m(0s, 0m 처럼 0 인 값도 기본값), 최소 30s.
 	//
 	// 폴링 1회당 GitHub API 요청 1개를 소모한다. 내용이 바뀌지 않았다면 조건부 요청이
 	// 304 로 처리되어 rate limit 에 카운트되지 않지만, 값을 과도하게 낮추면
