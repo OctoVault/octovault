@@ -52,7 +52,12 @@ func ownedBy(obj metav1.Object, ov *octovaultv1alpha1.OctoVault) bool {
 // 직접 남기므로, 그것만 믿으면 OctoVault 생성 권한만 있는 사용자가 지워진 OctoVault 와 같은 이름으로
 // 만들어, 수정 권한이 없는 Secret 을 덮어쓸 수 있다. adopt 는 그 대상을 수정할 수 있는 주체만 붙일 수
 // 있고, values.yaml 로는 넣을 수 없다(isReservedKey).
-func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
+//
+// owner-uid 가 지금 살아 있는 다른 OctoVault 를 가리키면 adopt 가 있어도 가져오지 않는다. 예전에는
+// controller ownerReference 가 이를 막았다. 막지 않으면 같은 targetName 을 쓰는 두 OctoVault 사이에서
+// (GitOps 가 adopt 를 계속 다시 붙이면) 소유권과 데이터가 번갈아 바뀐다. 그 OctoVault 를 확인할 수 없으면
+// (목록 조회 실패) 안전하게 가져오지 않는다.
+func (r *OctoVaultReconciler) claimTarget(ctx context.Context, obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
 	if ownedBy(obj, ov) {
 
 		return false, true
@@ -63,7 +68,33 @@ func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopt
 		return false, false
 	}
 
+	if uid := obj.GetAnnotations()[AnnoOVOwnerUID]; uid != "" {
+		if alive, err := r.octoVaultExists(ctx, obj.GetNamespace(), types.UID(uid)); err != nil || alive {
+
+			return false, false
+		}
+	}
+
 	return true, true
+}
+
+// octoVaultExists 네임스페이스에 이 UID 의 OctoVault 가 있는지. 대상은 OctoVault 와 같은 네임스페이스에 있다.
+func (r *OctoVaultReconciler) octoVaultExists(ctx context.Context, ns string, uid types.UID) (bool, error) {
+
+	var list octovaultv1alpha1.OctoVaultList
+	if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
+
+		return false, err
+	}
+
+	for i := range list.Items {
+		if list.Items[i].UID == uid {
+
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // dropLegacyOwnerRef 이전 버전이 붙인, uid 를 가리키는 ownerReference 를 뗀다. 뗐으면 true.

@@ -870,7 +870,7 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return err
 	}
 
-	adopted, owned := claimTarget(&cm.ObjectMeta, ov)
+	adopted, owned := r.claimTarget(ctx, &cm.ObjectMeta, ov)
 	if !owned {
 
 		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
@@ -930,7 +930,7 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return err
 	}
 
-	adopted, owned := claimTarget(&sec.ObjectMeta, ov)
+	adopted, owned := r.claimTarget(ctx, &sec.ObjectMeta, ov)
 	if !owned {
 
 		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)

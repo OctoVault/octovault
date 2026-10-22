@@ -257,3 +257,44 @@ func TestOctoVault_TargetUpdateConflict_RetriesWithoutFailing(t *testing.T) {
 	assert.Equal(t, StatusRetryInterval, res.RequeueAfter)
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase, "a conflict is not a failure")
 }
+
+// owner-uid 가 살아 있는 다른 OctoVault 를 가리키면, adopt 가 있어도 가져오지 않는다.
+// 같은 targetName 을 쓰는 두 OctoVault 사이에서 소유권이 번갈아 바뀌는 것을 막는다.
+func TestOctoVault_AdoptDoesNotStealFromALiveOctoVault(t *testing.T) {
+
+	ctx := context.Background()
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{AnnoOVOwnerUID: "uid-of-a", AnnoOVAdopt: "true"},
+		},
+		Data: map[string]string{"owned": "by-a"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	a := &octovaultv1alpha1.OctoVault{
+		ObjectMeta: metav1.ObjectMeta{Name: "ov-a", Namespace: ownershipNS, UID: types.UID("uid-of-a")},
+		Spec: octovaultv1alpha1.OctoVaultSpec{
+			OctoRepositoryRef: octovaultv1alpha1.LocalObjectRef{Name: "orepo-ownership"},
+			Repository:        "test-org/test-repo",
+			Path:              ownershipPath,
+			TargetName:        ownershipTarget,
+		},
+	}
+	require.NoError(t, cl.Create(ctx, a))
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "uid-of-a", cm.Annotations[AnnoOVOwnerUID], "A keeps the target")
+	assert.Equal(t, "by-a", cm.Data["owned"])
+
+	// A 가 지워지고 나면 adopt 로 이어받을 수 있다.
+	require.NoError(t, cl.Delete(ctx, a))
+	_, updated = reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID])
+}
