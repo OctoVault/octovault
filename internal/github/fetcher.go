@@ -25,6 +25,9 @@ import (
 // 오류 경로에서도 반드시 드레인해야 한다.
 const maxErrorBodyBytes = 4 << 10
 
+// errNotFound 요청한 경로가 저장소에 없다(404).
+var errNotFound = errors.New("404 not found")
+
 type Options struct {
 	BaseURL    string       // e.g. "https://api.github.com"
 	HTTPClient *http.Client // nil = default client
@@ -160,9 +163,14 @@ func (f *Fetcher) Fetch(ctx context.Context, org, repo, filePath, ref, token str
 		schemaPath := path.Join(dirOf(fp), f.schemaFileName)
 		schemaURL := f.contentURL(owner, repoName, schemaPath, refParam)
 
-		if s, _, sErr := f.fetchContentBase64(ctx, contentRequest{url: schemaURL, token: token, kind: "schema"}); sErr == nil {
-
+		// 스키마 파일이 없으면(404) 검증 없이 진행한다. 그 밖의 오류(1MB 초과, symlink, 권한, rate limit)를
+		// 무시하면 검증이 아무 표시 없이 꺼지므로 동기화를 실패시킨다.
+		s, _, sErr := f.fetchContentBase64(ctx, contentRequest{url: schemaURL, token: token, kind: "schema"})
+		switch {
+		case sErr == nil:
 			schema = s
+		case !errors.Is(sErr, errNotFound):
+			return nil, nil, "", fmt.Errorf("fetch schema file %s failed: %w", schemaPath, sErr)
 		}
 	}
 
@@ -365,7 +373,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 		return nil, errors.New("304 not modified but no cached body available")
 
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("404 not found: %s", cr.url)
+		return nil, fmt.Errorf("%w: %s", errNotFound, cr.url)
 
 	case http.StatusUnauthorized:
 		return nil, errors.New("401 unauthorized")

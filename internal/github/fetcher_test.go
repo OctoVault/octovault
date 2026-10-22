@@ -390,3 +390,40 @@ func TestFetcher_Fetch_TooLargeForbiddenIsNotAPermissionError(t *testing.T) {
 	require.ErrorContains(t, err, "larger than 1MB")
 	require.NotContains(t, err.Error(), "lacks access")
 }
+
+// 스키마 파일이 없으면 무시하지만, 그 밖의 이유로 받지 못하면 조용히 검증을 끄지 않고 실패한다.
+func TestFetcher_Fetch_SchemaErrors(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name    string
+		schema  *http.Response
+		wantErr string
+	}{
+		{name: "missing schema is ignored", schema: jsonResp(http.StatusNotFound, nil)},
+		{name: "oversized schema fails", schema: jsonResp(http.StatusOK, contentResp{Encoding: "none", Size: 2 << 20}), wantErr: "fetch schema file"},
+		{name: "symlink schema fails", schema: jsonResp(http.StatusOK, contentResp{Type: "symlink"}), wantErr: "path is a symlink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubRT{t: t}
+			stub.handler = func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/schema.json") {
+
+					return tc.schema, nil
+				}
+
+				return jsonResp(http.StatusOK, contentResp{Encoding: "base64", Content: b64WithNewline("a: b"), SHA: "sha"}), nil
+			}
+
+			f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, SchemaFileName: "schema.json"})
+			_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "app/values.yaml", "", "tok")
+			if tc.wantErr == "" {
+
+				require.NoError(t, err)
+				return
+			}
+
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
