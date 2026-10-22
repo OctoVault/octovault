@@ -338,13 +338,26 @@ Breaking changes to check before upgrading:
 
   **Rolling back and forward again.** Rolling back to an earlier release works: that release does not check
   ownership, so it keeps syncing the targets. But it rewrites each target's annotations and drops
-  `octovault.it/owner-uid`, and it does not put the `ownerReference` back. After upgrading again those targets
-  carry no ownership marker, so their `OctoVault`s fail with `TargetNotOwned`. Mark them for adoption once,
-  as someone allowed to edit them:
+  `octovault.it/owner-uid`, and it does not put the `ownerReference` back. Its status writes also drop
+  `status.targetUID`. After upgrading again those targets carry no ownership marker, so their `OctoVault`s
+  fail with `TargetNotOwned`. Mark them for adoption once, as someone allowed to edit them. Only mark targets
+  whose `octovault.it/owner` names an `OctoVault` that exists and that were not left behind by a deleted one
+  (`octovault.it/retained-from`): an `adopt` on a retained target stays unused, and later lets anyone who
+  creates an `OctoVault` with that `targetName` take the target over.
 
   ```bash
-  kubectl annotate configmap,secret -A -l app.kubernetes.io/managed-by=octovault octovault.it/adopt=true --overwrite
+  live=$(kubectl get octovault -A -o json | jq -c '[.items[] | "\(.metadata.namespace)/\(.metadata.name)"]')
+  kubectl get configmap,secret -A -l app.kubernetes.io/managed-by=octovault -o json \
+    | jq -r --argjson live "$live" '.items[]
+        | (.metadata.annotations // {}) as $a
+        | select(($a["octovault.it/owner-uid"] // "") == "" and $a["octovault.it/retained-from"] == null)
+        | select(($a["octovault.it/owner"] // "") as $o | $live | index([$o]))
+        | "\(.metadata.namespace) \(.kind | ascii_downcase)/\(.metadata.name)"' \
+    | while read -r ns obj; do kubectl annotate -n "$ns" "$obj" octovault.it/adopt=true --overwrite; done
   ```
+
+  For `OctoVault` names longer than 63 characters, `octovault.it/owner` holds a shortened name (see below) and
+  doesn't match; annotate those targets by hand.
 
 ### Manual CRDs
 
@@ -425,12 +438,17 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
   yourself if you no longer need them. (Targets therefore don't show up under the `OctoVault` in owner-tree
   tools such as `kubectl tree`.)
 - An existing `ConfigMap`/`Secret` with the target name that this `OctoVault` does not own is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
+  If `octovault.it/owner-uid` is removed from a target (for example by re-applying an old manifest, or by a
+  tool that rewrites all annotations), the `OctoVault` still recognizes the object it last wrote through
+  `status.targetUID` and writes the annotation back. A different object with the same name is not owned.
   Exception: an existing target not managed by another controller is adopted if it carries `octovault.it/adopt: "true"`.
   Deleting an `OctoVault` leaves its targets behind (with `octovault.it/retained-from: <ns>/<name>`); to have a
   recreated `OctoVault` (e.g. after a Helm/Argo reinstall) manage them again, add that annotation to each
   target, or delete the targets. Targets are never adopted by name alone: otherwise anyone allowed to create an
   `OctoVault` could overwrite a retained `Secret` they cannot edit. The annotation is consumed on adoption, and
-  it cannot be set through `values.yaml`. For `OctoVault` names longer than 63 characters the `<name>` part of
+  it cannot be set through `values.yaml`. `adopt: "true"` does not name an `OctoVault`: any `OctoVault` in the
+  same namespace whose `targetName` matches can take the target, so only add it once the intended `OctoVault`
+  exists (it adopts on its next reconcile, within a moment of the annotation being added). For `OctoVault` names longer than 63 characters the `<name>` part of
   `octovault.it/owner` (and the `octovault.it/owner-name` label) is shortened to its first 31 characters plus a
   hash.
 

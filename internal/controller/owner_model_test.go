@@ -171,7 +171,9 @@ func TestTargetChanged_OwnerUID(t *testing.T) {
 
 	removed := base()
 	delete(removed.Annotations, AnnoOVOwnerUID)
-	assert.True(t, targetChanged(base(), removed), "removing owner-uid by hand must be reverted right away")
+	// 이벤트가 나야 reconcile 이 돈다. 그 reconcile 이 대상을 되찾는지는 status.targetUID 에 달렸다
+	// (TestOctoVault_StrippedOwnerUID_IsRecoveredFromStatus).
+	assert.True(t, targetChanged(base(), removed), "removing owner-uid by hand must trigger a reconcile")
 }
 
 // 업그레이드 시점에 동기화가 실패하는 OctoVault 의 대상이나, targetName 을 바꾸기 전 이름으로 남은 대상도
@@ -309,4 +311,65 @@ func TestOctoVault_AdoptDoesNotStealFromALiveOctoVault(t *testing.T) {
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
 	getTarget(t, cl, &cm)
 	assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID])
+}
+
+// owner-uid 가 지워진 대상(옛 manifest 를 다시 apply 하는 등)도, 이 OctoVault 가 마지막으로 쓴 그 객체면
+// status.targetUID 로 되찾고 owner-uid 를 다시 써 넣는다. 다른 객체는 여전히 거부한다.
+func TestOctoVault_StrippedOwnerUID_IsRecoveredFromStatus(t *testing.T) {
+
+	stripped := func(uid string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: ownershipTarget, Namespace: ownershipNS, UID: types.UID(uid),
+				Labels:      map[string]string{LabelOVOwnerNS: ownershipNS, LabelOVOwnerName: "ov-ownership"},
+				Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-ownership"},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		objUID string
+		synced bool
+	}{
+		{name: "same object", objUID: "cm-uid", synced: true},
+		{name: "another object with the same name", objUID: "replacement-uid", synced: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+
+			rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, stripped(tc.objUID))
+			ov.Status.TargetUID = "cm-uid"
+			require.NoError(t, cl.Status().Update(context.Background(), ov))
+
+			_, updated := reconcileOwnership(t, rec, cl, ov)
+
+			var cm corev1.ConfigMap
+			getTarget(t, cl, &cm)
+			if !tc.synced {
+
+				assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+				assert.NotContains(t, cm.Annotations, AnnoOVOwnerUID)
+				return
+			}
+
+			require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+			assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID], "owner-uid must be written back")
+			assert.Equal(t, "bar", cm.Data["foo"])
+			assert.Equal(t, "cm-uid", updated.Status.TargetUID)
+		})
+	}
+}
+
+// 동기화하면 쓴 대상의 UID 가 status.targetUID 에 남는다.
+func TestOctoVault_Sync_RecordsTargetUID(t *testing.T) {
+
+	existing := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: ownershipTarget, Namespace: ownershipNS, UID: types.UID("cm-uid"),
+		Annotations: map[string]string{AnnoOVOwnerUID: "ov-uid"},
+	}}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+	assert.Equal(t, "cm-uid", updated.Status.TargetUID)
 }

@@ -24,6 +24,9 @@ import (
 // 지키기 위해 GC 가 볼 수 있는 소유 관계를 아예 만들지 않는다.
 //
 //   - octovault.it/owner-uid: 관리하는 OctoVault 의 UID. 소유 판단의 기준이다.
+//   - status.targetUID: 이 OctoVault 가 마지막으로 쓴 대상의 UID. owner-uid 가 지워진 대상(옛 manifest 를
+//     다시 apply 하거나 어노테이션을 통째로 다시 쓰는 도구)을 되찾는 데 쓴다. 대상의 메타데이터와 달리
+//     status 는 컨트롤러만 쓰므로, 대상을 고칠 수 있는 사용자가 이것으로 소유를 바꿀 수는 없다.
 //   - octovault.it/owner-ns, octovault.it/owner-name(라벨), octovault.it/owner(어노테이션):
 //     어느 OctoVault 인지 이름으로 찾는 데 쓴다(watch 이벤트 연결, 삭제 시 대상 찾기). 이름만으로 대상을
 //     이어받지는 않는다(claimTarget, octovault.it/adopt).
@@ -31,10 +34,19 @@ import (
 // 이전 버전이 붙인 ownerReference(controller=이 OctoVault)도 소유로 인정하고, 다음 갱신 때 뗀다.
 
 // ownedBy obj 가 이 OctoVault 의 대상인지 본다.
+//
+// owner-uid 가 있으면 그것만 본다(다른 OctoVault 가 adopt 로 가져간 대상은 status.targetUID 가 맞아도
+// 남의 것이다). 없으면 이 OctoVault 가 마지막으로 쓴 바로 그 객체(UID)인지 본다. 소유로 판단되면
+// 호출자가 갱신하면서 owner-uid 를 다시 써 넣는다.
 func ownedBy(obj metav1.Object, ov *octovaultv1alpha1.OctoVault) bool {
 	if uid := obj.GetAnnotations()[AnnoOVOwnerUID]; uid != "" {
 
 		return uid == string(ov.UID)
+	}
+
+	if ov.Status.TargetUID != "" && string(obj.GetUID()) == ov.Status.TargetUID {
+
+		return true
 	}
 
 	// 이전 버전이 만든 대상.

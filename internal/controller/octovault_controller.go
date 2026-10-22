@@ -570,6 +570,7 @@ func parseValues(valuesYAML []byte) (valuesDoc, string, *syncFailure) {
 // appliedOutput 대상에 적용한 결과. 상태에는 setSyncedStatus 가 한 번에 기록한다.
 type appliedOutput struct {
 	resolvedType string
+	targetUID    types.UID
 	rev          string
 	hash         string
 	extRefs      []octovaultv1alpha1.ExternalRefStatus
@@ -578,6 +579,7 @@ type appliedOutput struct {
 func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1alpha1.OctoVault, doc valuesDoc, poll time.Duration, resolvedType, rev, targetNS string) (appliedOutput, ctrl.Result, error) {
 
 	var appliedHash string
+	var targetUID types.UID
 	var extRefs []octovaultv1alpha1.ExternalRefStatus
 	switch resolvedType {
 	case string(octovaultv1alpha1.OutputConfigMap):
@@ -594,7 +596,8 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		}
 		appliedHash = sha256OfStringMap(data)
 
-		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+		uid, err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations)
+		if err != nil {
 			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
@@ -611,6 +614,8 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return appliedOutput{}, ctrl.Result{}, err
 		}
+
+		targetUID = uid
 
 	case string(octovaultv1alpha1.OutputSecret):
 		bytes := make(map[string][]byte, len(doc.Spec.Data))
@@ -738,7 +743,8 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		}
 
 		appliedHash = sha256OfBytesMap(bytes)
-		if err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, bytes, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+		uid, err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, bytes, doc.Metadata.Labels, doc.Metadata.Annotations)
+		if err != nil {
 			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
@@ -757,9 +763,11 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 			return appliedOutput{}, ctrl.Result{}, err
 		}
+
+		targetUID = uid
 	}
 
-	return appliedOutput{resolvedType: resolvedType, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
+	return appliedOutput{resolvedType: resolvedType, targetUID: targetUID, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
 }
 
 // ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
@@ -820,6 +828,7 @@ func (r *OctoVaultReconciler) syncedStatus(ov *octovaultv1alpha1.OctoVault, out 
 	next.LastSyncedTime = &now
 	next.AppliedDataHash = out.hash
 	next.ResolvedType = out.resolvedType
+	next.TargetUID = string(out.targetUID)
 	next.ExternalRefs = out.extRefs
 	next.ExternalRefsSummary = summarizeExtRefs(out.extRefs)
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
@@ -867,7 +876,7 @@ func (r *OctoVaultReconciler) fetch(ctx context.Context, org, repo, path, ref, t
 	return r.Git.Fetch(ctx, org, repo, path, ref, token)
 }
 
-func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string]string, userLabels, userAnnotations map[string]string) error {
+func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string]string, userLabels, userAnnotations map[string]string) (types.UID, error) {
 
 	sysLabels := buildSysLabels(ov, rev)
 	sysAnnotations := buildSysAnnotations(ov, dataHash)
@@ -887,16 +896,18 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 			Data: data,
 		}
 
-		return r.Create(ctx, &cm)
+		err = r.Create(ctx, &cm)
+
+		return cm.UID, err
 	} else if err != nil {
 
-		return err
+		return "", err
 	}
 
 	adopted, owned := r.claimTarget(ctx, &cm.ObjectMeta, ov)
 	if !owned {
 
-		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
+		return "", fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
 	}
 
 	// 이전 버전이 붙인 ownerReference 를 뗀다. 남겨 두면 foreground 삭제에서 GC 가 대상을 지운다.
@@ -910,7 +921,7 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(cm.Data, data) &&
 		len(cm.BinaryData) == 0 {
-		return nil
+		return cm.UID, nil
 	}
 
 	// OctoVault owns the resource it creates; labels/annotations are fully replaced
@@ -923,10 +934,12 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 	cm.Data = data
 	cm.BinaryData = nil
 
-	return r.Update(ctx, &cm)
+	err = r.Update(ctx, &cm)
+
+	return cm.UID, err
 }
 
-func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string][]byte, userLabels, userAnnotations map[string]string) error {
+func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1alpha1.OctoVault, ns, name, rev, dataHash string, data map[string][]byte, userLabels, userAnnotations map[string]string) (types.UID, error) {
 
 	sysLabels := buildSysLabels(ov, rev)
 	sysAnnotations := buildSysAnnotations(ov, dataHash)
@@ -947,16 +960,18 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 			Type: corev1.SecretTypeOpaque,
 		}
 
-		return r.Create(ctx, &sec)
+		err = r.Create(ctx, &sec)
+
+		return sec.UID, err
 	} else if err != nil {
 
-		return err
+		return "", err
 	}
 
 	adopted, owned := r.claimTarget(ctx, &sec.ObjectMeta, ov)
 	if !owned {
 
-		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
+		return "", fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
 	}
 
 	// 이전 버전이 붙인 ownerReference 를 뗀다. 남겨 두면 foreground 삭제에서 GC 가 대상을 지운다.
@@ -969,7 +984,7 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		reflect.DeepEqual(sec.Labels, desiredLabels) &&
 		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(sec.Data, data) {
-		return nil
+		return sec.UID, nil
 	}
 
 	// OctoVault owns the resource it creates; labels/annotations are fully replaced
@@ -979,7 +994,9 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	sec.Annotations = desiredAnnotations
 	sec.Data = data
 
-	return r.Update(ctx, &sec)
+	err = r.Update(ctx, &sec)
+
+	return sec.UID, err
 }
 
 // deleteStaleTarget 이전 종류(kind)의 대상을 지운다. 이 OctoVault 가 소유한 것만 지운다.
@@ -1153,7 +1170,7 @@ func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv
 }
 
 func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
-	if a.Phase != b.Phase || a.Message != b.Message || a.ObservedRevision != b.ObservedRevision || a.ObservedRef != b.ObservedRef || a.AppliedDataHash != b.AppliedDataHash || a.ResolvedType != b.ResolvedType {
+	if a.Phase != b.Phase || a.Message != b.Message || a.ObservedRevision != b.ObservedRevision || a.ObservedRef != b.ObservedRef || a.AppliedDataHash != b.AppliedDataHash || a.ResolvedType != b.ResolvedType || a.TargetUID != b.TargetUID {
 
 		return false
 	}

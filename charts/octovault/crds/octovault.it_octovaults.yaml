@@ -215,6 +215,12 @@ spec:
                 type: string
               resolvedType:
                 type: string
+              targetUID:
+                description: |-
+                  TargetUID 마지막으로 만들거나 갱신한 대상(ConfigMap/Secret)의 UID. 대상의 octovault.it/owner-uid
+                  어노테이션이 지워져도(예: 옛 manifest 를 다시 apply) 이 값으로 소유를 확인하고 어노테이션을 되살린다.
+                  컨트롤러만 쓴다.
+                type: string
             type: object
         required:
         - spec
