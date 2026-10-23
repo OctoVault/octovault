@@ -362,8 +362,13 @@ Breaking changes to check before upgrading:
     | while read -r ns obj; do kubectl annotate -n "$ns" "$obj" octovault.it/adopt=true --overwrite; done
   ```
 
-  For `OctoVault` names longer than 63 characters, `octovault.it/owner` holds a shortened name (see below) and
-  doesn't match; annotate those targets by hand.
+  The filter errs on the safe side and also skips some targets that belong to their `OctoVault`: targets older
+  than it (one it adopted, or one rewritten after a Helm reinstall on the earlier release), and, for
+  `OctoVault` names longer than 63 characters, every target, because `octovault.it/owner` then holds a
+  shortened name (see below). Their data is not overwritten; the `OctoVault` just stays `TargetNotOwned`.
+  After running the script, list the `OctoVault`s that are still `TargetNotOwned` (the jq command under
+  "Existing objects not created by OctoVault" above), check each target by hand, and add
+  `octovault.it/adopt: "true"` to the ones that are theirs.
 
 ### Manual CRDs
 
