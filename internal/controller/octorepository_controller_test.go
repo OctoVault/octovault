@@ -232,9 +232,9 @@ func TestOctoRepository_SecretInvalidBase64(t *testing.T) {
 
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: "devops"},
-		StringData: map[string]string{
-			"password":         "%%%not-base64%%%",
-			"passwordEncoding": "base64",
+		Data: map[string][]byte{
+			"password":         []byte("%%%not-base64%%%"),
+			"passwordEncoding": []byte("base64"),
 		},
 	}
 	orepo := &octovaultv1alpha1.OctoRepository{
@@ -262,7 +262,7 @@ func TestOctoRepository_SecretInvalidBase64(t *testing.T) {
 	var got octovaultv1alpha1.OctoRepository
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: "orepo"}, &got))
 	require.Equal(t, octovaultv1alpha1.OctoRepoPhaseFailed, got.Status.Phase)
-	require.Contains(t, got.Status.Message, "failed to decode password")
+	require.Contains(t, got.Status.Message, "invalid base64 in 'password' key")
 	ready := getReady(got.Status.Conditions)
 	require.NotNil(t, ready)
 	require.Equal(t, "SecretInvalidPasswordEncoding", ready.Reason)
@@ -276,7 +276,7 @@ func TestOctoRepository_AccessDenied(t *testing.T) {
 	// Secret with password
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "creds", Namespace: "devops"},
-		StringData: map[string]string{"password": "dummy"},
+		Data:       map[string][]byte{"password": []byte("dummy")},
 	}
 	orepo := &octovaultv1alpha1.OctoRepository{
 		ObjectMeta: metav1.ObjectMeta{Name: "orepo"},

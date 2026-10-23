@@ -18,12 +18,11 @@ package controller
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	ghclient "github.com/octovault/octovault/internal/github"
@@ -83,7 +82,7 @@ var (
 	// pollInterval GIT_CRED_TTL 로 조정한다. Checker 의 캐시 TTL 과 같은 값을 쓴다.
 	pollInterval = func() time.Duration {
 
-		if v := strings.TrimSpace(env("GIT_CRED_TTL")); v != "" {
+		if v := strings.TrimSpace(os.Getenv("GIT_CRED_TTL")); v != "" {
 			if d, err := time.ParseDuration(v); err == nil && d > 0 {
 
 				return d
@@ -222,24 +221,19 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 // error 를 반환하지 않는다. RequeueAfter 가 설정되면 호출자는 그대로 물러나야 한다.
 func (r *OctoRepositoryReconciler) extractAndDecodePassword(ctx context.Context, o *octovaultv1alpha1.OctoRepository, sec *corev1.Secret) (string, ctrl.Result) {
 
-	pwd := orgFromSecret(sec, "password")
-	if pwd == "" {
+	// 실패는 즉시 재시도해도 결과가 같다.
+	pwd, err := tokenFromSecret(sec)
+	if err != nil {
 
-		// 즉시 재시도해도 결과가 같다.
-		r.setFailed(ctx, o, "SecretMissingPassword", "secret missing password")
-		return "", ctrl.Result{RequeueAfter: pollInterval}
-	}
+		msg := "secret missing password" + legacyAnnotationHint(sec)
+		if !errors.Is(err, errMissingPassword) {
 
-	if orgFromSecret(sec, "passwordEncoding") == "base64" {
-
-		dec, err := base64.StdEncoding.DecodeString(pwd)
-		if err != nil {
-
-			r.setFailed(ctx, o, "SecretInvalidPasswordEncoding", fmt.Sprintf("failed to decode password from secret %s: %v", sec.Name, err))
-			return "", ctrl.Result{RequeueAfter: pollInterval}
+			// err 가 이미 "invalid base64 in 'password' key: <원인>" 이므로 같은 말을 덧붙이지 않는다.
+			msg = fmt.Sprintf("secret %s: %v", sec.Name, err)
 		}
 
-		pwd = string(dec)
+		r.setFailed(ctx, o, tokenFailureReason(err), msg)
+		return "", ctrl.Result{RequeueAfter: pollInterval}
 	}
 
 	return pwd, ctrl.Result{}
@@ -396,91 +390,11 @@ func (r *OctoRepositoryReconciler) maxWorkers() int {
 	return 1
 }
 
-func upsertReadyCondition(conds []metav1.Condition, status metav1.ConditionStatus, reason, msg string) []metav1.Condition {
-
-	now := metav1.Now()
-	for i := range conds {
-		if conds[i].Type == CondReady {
-			// 값이 달라질 때만 transition 갱신
-			if conds[i].Status != status || conds[i].Reason != reason || conds[i].Message != msg {
-
-				conds[i].Status = status
-				conds[i].Reason = reason
-				conds[i].Message = msg
-				conds[i].LastTransitionTime = now
-			}
-
-			return conds
-		}
-	}
-
-	return append(conds, metav1.Condition{
-		Type:               "Ready",
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: now,
-	})
-}
-
 func statusEqual(a, b octovaultv1alpha1.OctoRepositoryStatus) bool {
-
 	if a.Phase != b.Phase || a.Message != b.Message || a.SyncedSecretName != b.SyncedSecretName {
 
 		return false
 	}
 
-	var ar, br *metav1.Condition
-	for i := range a.Conditions {
-		if a.Conditions[i].Type == "Ready" {
-
-			ar = &a.Conditions[i]
-			break
-		}
-	}
-
-	for i := range b.Conditions {
-		if b.Conditions[i].Type == "Ready" {
-
-			br = &b.Conditions[i]
-			break
-		}
-	}
-
-	if (ar == nil) != (br == nil) {
-
-		return false
-	}
-	if ar != nil && br != nil {
-		if ar.Status != br.Status || ar.Reason != br.Reason || ar.Message != br.Message {
-
-			return false
-		}
-	}
-
-	return true
-}
-
-func env(k string) string {
-	if v, ok := syscall.Getenv(k); ok {
-
-		return v
-	}
-	return ""
-}
-
-func orgFromSecret(secret *corev1.Secret, org string) string {
-	if v, ok := secret.Data[org]; ok && len(v) > 0 {
-
-		return string(v)
-	}
-
-	if secret.StringData != nil {
-		if v, ok := secret.StringData[org]; ok && v != "" {
-
-			return v
-		}
-	}
-
-	return ""
+	return readyConditionEqual(a.Conditions, b.Conditions)
 }

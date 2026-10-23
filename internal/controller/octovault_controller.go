@@ -20,7 +20,6 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -370,25 +369,22 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 		return nil, "", ctrl.Result{}, err
 	}
 
-	token := getFromSecret(&cred, "password")
-	if token == "" {
+	token, err := tokenFromSecret(&cred)
+	if err != nil {
 
-		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretMissingPassword", missingPasswordMessage(&cred, orepo.Name)))
-
-		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
-	}
-
-	if enc := getFromSecret(&cred, "passwordEncoding"); enc == "base64" {
-
-		dec, err := base64.StdEncoding.DecodeString(token)
-		if err != nil {
-
-			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "SecretInvalidPasswordEncoding", fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)))
-
-			return nil, "", ctrl.Result{RequeueAfter: poll}, nil
+		var msg string
+		switch {
+		case errors.Is(err, errMissingPassword):
+			msg = fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", cred.Name, orepo.Name) + legacyAnnotationHint(&cred)
+		case errors.Is(err, errLegacyPasswordEncoding):
+			msg = fmt.Sprintf("Secret %q for OctoRepository %q: %v", cred.Name, orepo.Name, err)
+		default:
+			msg = fmt.Sprintf("invalid base64 in 'password' key in Secret %q for OctoRepository %q", orepo.Spec.CredentialsRef.Name, orepo.Name)
 		}
 
-		token = string(dec)
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, tokenFailureReason(err), msg))
+
+		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	return &orepo, token, ctrl.Result{}, nil
@@ -971,37 +967,9 @@ func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv
 	next.Phase = octovaultv1alpha1.OVPhaseFailed
 	next.Message = msg
 
-	// upsertCond 는 슬라이스를 제자리에서 고치므로 복사본을 넘긴다. 그렇지 않으면
-	// prev 까지 바뀌어 updateStatusIfChanged 가 변경을 감지하지 못한다.
-	conds := append([]metav1.Condition(nil), prev.Conditions...)
-	next.Conditions = upsertCond(conds, CondReady, metav1.ConditionFalse, reason, msg)
+	next.Conditions = upsertReadyCondition(prev.Conditions, metav1.ConditionFalse, reason, msg)
 
 	return next
-}
-
-func upsertCond(conds []metav1.Condition, t string, s metav1.ConditionStatus, reason, msg string) []metav1.Condition {
-	now := metav1.Now()
-	for i := range conds {
-		if conds[i].Type == t {
-			if conds[i].Status != s || conds[i].Reason != reason || conds[i].Message != msg {
-
-				conds[i].Status = s
-				conds[i].Reason = reason
-				conds[i].Message = msg
-				conds[i].LastTransitionTime = now
-			}
-
-			return conds
-		}
-	}
-
-	return append(conds, metav1.Condition{
-		Type:               t,
-		Status:             s,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: now,
-	})
 }
 
 func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
@@ -1010,36 +978,7 @@ func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 		return false
 	}
 
-	var ar, br *metav1.Condition
-	for i := range a.Conditions {
-		if a.Conditions[i].Type == CondReady {
-
-			ar = &a.Conditions[i]
-			break
-		}
-	}
-
-	for i := range b.Conditions {
-		if b.Conditions[i].Type == CondReady {
-
-			br = &b.Conditions[i]
-			break
-		}
-	}
-
-	if (ar == nil) != (br == nil) {
-
-		return false
-	}
-
-	if ar != nil && br != nil {
-		if ar.Status != br.Status || ar.Reason != br.Reason || ar.Message != br.Message {
-
-			return false
-		}
-	}
-
-	return true
+	return readyConditionEqual(a.Conditions, b.Conditions)
 }
 
 func parseDurationOr(s string, d time.Duration) time.Duration {
@@ -1147,22 +1086,6 @@ func sha256OfBytesMap(m map[string][]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func getFromSecret(s *corev1.Secret, key string) string {
-	if v, ok := s.Data[key]; ok && len(v) > 0 {
-
-		return string(v)
-	}
-
-	if s.StringData != nil {
-		if v, ok := s.StringData[key]; ok && v != "" {
-
-			return v
-		}
-	}
-
-	return ""
-}
-
 func summarizeExtRefs(refs []octovaultv1alpha1.ExternalRefStatus) string {
 	if len(refs) == 0 {
 
@@ -1235,20 +1158,4 @@ func (r *OctoVaultReconciler) maxWorkers() int {
 	}
 
 	return 1
-}
-
-// legacyAnnotationKeys 이전 버전이 토큰을 읽던 Secret 어노테이션. 지금은 읽지 않는다.
-var legacyAnnotationKeys = []string{"octovault.it/password", "octovault.it/passwordEncoding"}
-
-// missingPasswordMessage 토큰이 없을 때의 메시지. 예전처럼 어노테이션에 넣어 둔 경우는 옮기라고 알려 준다.
-func missingPasswordMessage(sec *corev1.Secret, orepoName string) string {
-	for _, k := range legacyAnnotationKeys {
-		if sec.Annotations[k] != "" {
-
-			return fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q: annotation %s is no longer read, move the token into the Secret's data (data.password, data.passwordEncoding)",
-				sec.Name, orepoName, k)
-		}
-	}
-
-	return fmt.Sprintf("no 'password' key in Secret %q for OctoRepository %q", sec.Name, orepoName)
 }

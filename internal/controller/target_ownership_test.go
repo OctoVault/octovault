@@ -35,7 +35,7 @@ func newOwnershipReconciler(t *testing.T, values []byte, existing client.Object)
 
 	cred := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "cred-ownership", Namespace: ownershipNS},
-		StringData: map[string]string{"password": "dummy"},
+		Data:       map[string][]byte{"password": []byte("dummy")},
 	}
 	orepo := &octovaultv1alpha1.OctoRepository{
 		ObjectMeta: metav1.ObjectMeta{Name: "orepo-ownership"},

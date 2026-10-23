@@ -2,12 +2,12 @@ package awssm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
+
+	"github.com/octovault/octovault/internal/aws/jsonkey"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -126,39 +126,5 @@ func (p *Provider) GetSecret(ctx context.Context, name string) ([]byte, Meta, er
 }
 
 func (p *Provider) ExtractJSONKey(value []byte, jsonKey string) ([]byte, error) {
-
-	if jsonKey == "" {
-
-		return nil, errors.New("jsonKey required")
-	}
-
-	var t interface{}
-	if err := json.Unmarshal(value, &t); err != nil {
-
-		return nil, fmt.Errorf("parse json: %w", err)
-	}
-
-	cur := t
-	for _, part := range strings.Split(jsonKey, ".") {
-		m, ok := cur.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("path %q not found (non-object at %q)", jsonKey, part)
-		}
-		next, ok := m[part]
-		if !ok {
-			return nil, fmt.Errorf("json key %q not found", part)
-		}
-		cur = next
-	}
-
-	switch t := cur.(type) {
-	case string:
-		return []byte(t), nil
-	default:
-		b, err := json.Marshal(t)
-		if err != nil {
-			return nil, fmt.Errorf("marshal value at %q: %w", jsonKey, err)
-		}
-		return b, nil
-	}
+	return jsonkey.Extract(value, jsonKey)
 }

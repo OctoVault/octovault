@@ -284,8 +284,28 @@ Breaking changes to check before upgrading:
 - **Credentials from Secret annotations are no longer read.** Earlier versions let an `OctoVault` take the
   token from the `octovault.it/password` annotation, and the encoding from `octovault.it/passwordEncoding`,
   when the Secret's data had no `password`. Move both into the Secret's data (`password`, `passwordEncoding`).
-  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or authentication fails with 401 if only the
-  encoding was in an annotation.
+  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or with `SecretLegacyAnnotation` if the token
+  was moved but `passwordEncoding: base64` is still only in the annotation (any other annotation value is
+  ignored, since only `base64` changes how the token is read); both messages say what to move.
+- **Existing objects not created by OctoVault are no longer overwritten.** Earlier versions overwrote any
+  `ConfigMap`/`Secret` with the target name. An `OctoVault` whose target was not created by it now fails with
+  `TargetNotOwned`. To find them:
+
+  ```bash
+  kubectl get octovault -A -o json | jq -r '.items[]
+    | select(any(.status.conditions[]?; .type=="Ready" and .reason=="TargetNotOwned"))
+    | "\(.metadata.namespace)/\(.metadata.name) -> \(.spec.targetName)"'
+  ```
+
+  Rename the target, delete the existing object, or annotate it with `octovault.it/adopt: "true"` to let the
+  `OctoVault` take it over.
+
+- **Numbers extracted with `jsonKey` keep their original form.** Values used to pass through a float64, so
+  large integers lost digits (`12345678901234567890` became `12345678901234567000`) and other forms were
+  normalized (`1e3` became `1000`). Numbers now keep their original digits and spelling. When `jsonKey`
+  points at a number, it is copied exactly as written; when it points at an object or array, that value is
+  re-encoded as compact JSON (whitespace dropped, object keys sorted) with its numbers left as written. The
+  resulting Secret value can change on the first sync after upgrading.
 
 ### Manual CRDs
 
