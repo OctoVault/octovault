@@ -36,15 +36,18 @@ import (
 // ownedBy obj 가 이 OctoVault 의 대상인지 본다.
 //
 // owner-uid 가 있으면 그것만 본다(다른 OctoVault 가 adopt 로 가져간 대상은 status.targetUID 가 맞아도
-// 남의 것이다). 없으면 이 OctoVault 가 마지막으로 쓴 바로 그 객체(UID)인지 본다. 소유로 판단되면
-// 호출자가 갱신하면서 owner-uid 를 다시 써 넣는다.
+// 남의 것이다). 없으면 이 OctoVault 가 마지막으로 쓴 바로 그 객체(UID)이고 owner 라벨도 이 OctoVault 를
+// 가리키는지 본다. 라벨까지 보는 것은, 다른 OctoVault 가 adopt 로 가져간 뒤 owner-uid 가 지워진 대상을
+// 이전 소유자가 status.targetUID 만으로 되가져가지 않게 하기 위해서다(가져간 쪽이 라벨을 자기 것으로 다시
+// 쓴다). 소유로 판단되면 호출자가 갱신하면서 owner-uid 를 다시 써 넣는다.
 func ownedBy(obj metav1.Object, ov *octovaultv1alpha1.OctoVault) bool {
 	if uid := obj.GetAnnotations()[AnnoOVOwnerUID]; uid != "" {
 
 		return uid == string(ov.UID)
 	}
 
-	if ov.Status.TargetUID != "" && string(obj.GetUID()) == ov.Status.TargetUID {
+	if ov.Status.TargetUID != "" && string(obj.GetUID()) == ov.Status.TargetUID &&
+		obj.GetLabels()[LabelOVOwnerNS] == ov.Namespace && obj.GetLabels()[LabelOVOwnerName] == labelSafe(ov.Name) {
 
 		return true
 	}
@@ -131,33 +134,40 @@ func dropLegacyOwnerRef(obj metav1.Object, uid types.UID) bool {
 	return true
 }
 
-// releaseTarget 이 OctoVault 의 소유 표시(owner-uid, 이전 버전의 ownerReference)를 지우고
-// retained-from 을 남긴다. 지울 것이 있었으면 true.
+// releaseTarget 이 OctoVault 의 대상이면(ownedBy) 소유 표시(owner-uid, 이전 버전의 ownerReference)를 지우고
+// retained-from 을 남긴다. owner-uid 가 이미 지워졌지만 status.targetUID 로 소유가 확인되는 대상에도
+// retained-from 을 남긴다. 바뀐 것이 있으면 true.
 func releaseTarget(obj metav1.Object, ov *octovaultv1alpha1.OctoVault) bool {
-
-	changed := dropLegacyOwnerRef(obj, ov.UID)
-
-	ann := obj.GetAnnotations()
-	if ann[AnnoOVOwnerUID] == string(ov.UID) {
-
-		delete(ann, AnnoOVOwnerUID)
-		changed = true
-	}
-
-	if !changed {
+	if !ownedBy(obj, ov) {
 
 		return false
 	}
 
+	changed := dropLegacyOwnerRef(obj, ov.UID)
+
+	ann := obj.GetAnnotations()
 	if ann == nil {
 
 		ann = map[string]string{}
 	}
 
-	ann[AnnoOVRetainedBy] = ov.Namespace + "/" + ov.Name
+	// ownedBy 를 통과했으므로 owner-uid 는 이 OctoVault 의 것이거나 없다.
+	if _, ok := ann[AnnoOVOwnerUID]; ok {
+
+		delete(ann, AnnoOVOwnerUID)
+		changed = true
+	}
+
+	retained := ov.Namespace + "/" + ov.Name
+	if ann[AnnoOVRetainedBy] != retained {
+
+		ann[AnnoOVRetainedBy] = retained
+		changed = true
+	}
+
 	obj.SetAnnotations(ann)
 
-	return true
+	return changed
 }
 
 // mapTargetToOctoVault 대상의 변경을 그것을 관리하는 OctoVault 의 reconcile 요청으로 바꾼다.

@@ -341,17 +341,23 @@ Breaking changes to check before upgrading:
   `octovault.it/owner-uid`, and it does not put the `ownerReference` back. Its status writes also drop
   `status.targetUID`. After upgrading again those targets carry no ownership marker, so their `OctoVault`s
   fail with `TargetNotOwned`. Mark them for adoption once, as someone allowed to edit them. Only mark targets
-  whose `octovault.it/owner` names an `OctoVault` that exists and that were not left behind by a deleted one
-  (`octovault.it/retained-from`): an `adopt` on a retained target stays unused, and later lets anyone who
-  creates an `OctoVault` with that `targetName` take the target over.
+  whose `octovault.it/owner` names an `OctoVault` that exists, that were not left behind by a deleted one
+  (`octovault.it/retained-from`), and that were created after that `OctoVault`. An `adopt` on a target left
+  behind stays unused, and later lets anyone who creates an `OctoVault` with that `targetName` take the target
+  over. The creation-time check matters because the earlier release only writes `retained-from` when it
+  removes an `ownerReference`, which upgraded targets no longer have: a target whose `OctoVault` was deleted
+  and recreated under the same name during the rollback carries no marker, but it is older than the
+  `OctoVault` that now has the name.
 
   ```bash
-  live=$(kubectl get octovault -A -o json | jq -c '[.items[] | "\(.metadata.namespace)/\(.metadata.name)"]')
+  live=$(kubectl get octovault -A -o json \
+    | jq -c '[.items[] | {key: "\(.metadata.namespace)/\(.metadata.name)", value: .metadata.creationTimestamp}] | from_entries')
   kubectl get configmap,secret -A -l app.kubernetes.io/managed-by=octovault -o json \
     | jq -r --argjson live "$live" '.items[]
         | (.metadata.annotations // {}) as $a
         | select(($a["octovault.it/owner-uid"] // "") == "" and $a["octovault.it/retained-from"] == null)
-        | select(($a["octovault.it/owner"] // "") as $o | $live | index([$o]))
+        | select($live[$a["octovault.it/owner"] // ""] as $ovCreated
+                 | $ovCreated != null and .metadata.creationTimestamp >= $ovCreated)
         | "\(.metadata.namespace) \(.kind | ascii_downcase)/\(.metadata.name)"' \
     | while read -r ns obj; do kubectl annotate -n "$ns" "$obj" octovault.it/adopt=true --overwrite; done
   ```
@@ -440,7 +446,9 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 - An existing `ConfigMap`/`Secret` with the target name that this `OctoVault` does not own is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
   If `octovault.it/owner-uid` is removed from a target (for example by re-applying an old manifest, or by a
   tool that rewrites all annotations), the `OctoVault` still recognizes the object it last wrote through
-  `status.targetUID` and writes the annotation back. A different object with the same name is not owned.
+  `status.targetUID` and writes the annotation back, as long as the owner labels (`octovault.it/owner-ns`,
+  `octovault.it/owner-name`) still point at it. A different object with the same name is not owned, and an
+  `OctoVault` that reports `TargetNotOwned` (for example after another one adopted the target) forgets it.
   Exception: an existing target not managed by another controller is adopted if it carries `octovault.it/adopt: "true"`.
   Deleting an `OctoVault` leaves its targets behind (with `octovault.it/retained-from: <ns>/<name>`); to have a
   recreated `OctoVault` (e.g. after a Helm/Argo reinstall) manage them again, add that annotation to each

@@ -602,7 +602,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
 
-				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
+				r.updateStatusIfChanged(ctx, ov, targetNotOwned(ov.Status, err))
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
@@ -749,7 +749,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
 			if errors.Is(err, errTargetNotOwned) {
 
-				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
+				r.updateStatusIfChanged(ctx, ov, targetNotOwned(ov.Status, err))
 				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
@@ -768,6 +768,17 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 	}
 
 	return appliedOutput{resolvedType: resolvedType, targetUID: targetUID, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
+}
+
+// targetNotOwned TargetNotOwned 실패 상태. 대상이 더는 이 OctoVault 의 것이 아니므로(예: 다른 OctoVault 가
+// adopt 로 가져감) status.targetUID 도 비운다. 남겨 두면 나중에 owner-uid 가 지워졌을 때 그 대상을 다시
+// 자기 것으로 볼 수 있다.
+func targetNotOwned(prev octovaultv1alpha1.OctoVaultStatus, err error) octovaultv1alpha1.OctoVaultStatus {
+
+	next := fail(prev, "TargetNotOwned", err.Error())
+	next.TargetUID = ""
+
+	return next
 }
 
 // ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
