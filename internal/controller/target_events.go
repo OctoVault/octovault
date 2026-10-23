@@ -23,7 +23,7 @@ var (
 		LabelManagedBy, LabelOVOwnerNS, LabelOVOwnerName,
 		"reconcile.octovault.it/managed-by", "reconcile.octovault.it/owner", "reconcile.octovault.it/revision",
 	}
-	systemAnnotationKeys = []string{"reconcile.octovault.it/data-hash", AnnoOVOwnerFull}
+	systemAnnotationKeys = []string{"reconcile.octovault.it/data-hash", AnnoOVOwnerFull, AnnoOVOwnerUID}
 )
 
 func targetEventFilter[T client.Object]() predicate.TypedFuncs[T] {
@@ -36,6 +36,7 @@ func targetEventFilter[T client.Object]() predicate.TypedFuncs[T] {
 
 // targetChanged 컨트롤러가 되돌려야 하는 변경인지 본다.
 func targetChanged(oldObj, newObj client.Object) bool {
+	// owner-uid 는 systemAnnotationKeys 로 비교한다. 이전 버전이 붙인 ownerReference 변화도 본다.
 	if controllerUID(oldObj) != controllerUID(newObj) {
 
 		return true

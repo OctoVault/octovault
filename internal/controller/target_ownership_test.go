@@ -180,7 +180,8 @@ func TestOctoVault_RetainedTarget_WithAdopt_IsAdopted(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, &cm))
-	assert.True(t, metav1.IsControlledBy(&cm, &updated), "controller ref must point at the new OctoVault")
+	assert.Equal(t, string(updated.UID), cm.Annotations[AnnoOVOwnerUID], "the new OctoVault must own the target")
+	assert.Empty(t, cm.OwnerReferences, "no ownerReference is used for ownership")
 	assert.NotContains(t, cm.Annotations, AnnoOVRetainedBy)
 	assert.NotContains(t, cm.Annotations, AnnoOVAdopt, "adopt is consumed")
 	assert.Equal(t, "bar", cm.Data["foo"])
@@ -206,14 +207,9 @@ func TestOctoVault_OrphanedTargetWithAdopt_IsAdopted(t *testing.T) {
 	assert.Equal(t, "s3cr3t", string(sec.Data["token"]), "the adopted target must carry the synced data")
 }
 
-// targetOwnerUID 대상을 소유한 OctoVault 의 UID. 없으면 "".
+// targetOwnerUID 대상을 소유한 OctoVault 의 UID(owner-uid 어노테이션). 없으면 "".
 func targetOwnerUID(obj metav1.Object) string {
-	if ref := metav1.GetControllerOf(obj); ref != nil {
-
-		return string(ref.UID)
-	}
-
-	return ""
+	return obj.GetAnnotations()[AnnoOVOwnerUID]
 }
 
 // 다른 주체가 controller 인 대상은 adopt 가 있어도 가져오지 않는다.
@@ -274,8 +270,6 @@ func TestOctoVault_DeleteAndRecreate_ResumesManagingTarget(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}, &cm))
-	ctrlRef := metav1.GetControllerOf(&cm)
-	require.NotNil(t, ctrlRef, "the target must have a controller again")
-	assert.Equal(t, types.UID("recreated-uid"), ctrlRef.UID, "the controller must be the recreated OctoVault")
+	assert.Equal(t, "recreated-uid", cm.Annotations[AnnoOVOwnerUID], "the recreated OctoVault must own the target")
 	assert.NotContains(t, cm.Annotations, AnnoOVRetainedBy)
 }

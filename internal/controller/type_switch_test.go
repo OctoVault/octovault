@@ -128,7 +128,7 @@ func TestOctoVault_TypeSwitch_CleanupFailure_KeepsNewTargetOnDelete(t *testing.T
 
 	var sec corev1.Secret
 	require.NoError(t, cl.Get(ctx, target, &sec))
-	assert.Empty(t, sec.OwnerReferences, "the new Secret must be released, not garbage-collected")
+	assertReleased(t, &sec)
 }
 
 // 정리가 실패한 상태에서 원래 종류로 되돌리면, 중간에 만든 대상이 지워져야 한다.
@@ -213,6 +213,10 @@ type blindSecretCache struct {
 
 func (blindSecretCache) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	return apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, key.Name)
+}
+
+func (blindSecretCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	return nil
 }
 
 // Secret 에서 ConfigMap 으로 바뀐 직후에는 메타데이터 캐시에 없더라도 API 로 확인해 남은 Secret 을 지운다.

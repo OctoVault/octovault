@@ -1,0 +1,434 @@
+package controller
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+// 대상 소유는 ownerReference 가 아니라 owner-uid 어노테이션으로 표시한다(target_ownership.go).
+// ownerReference 가 있으면 foreground 삭제에서 GC 가 대상을 지우므로, 새로 만드는 대상에는 절대 붙지 않아야 한다.
+
+// targetObjUID status.targetUID 테스트에서 대상 객체의 UID.
+const targetObjUID = "cm-uid"
+
+func getTarget(t *testing.T, cl client.Client, obj client.Object) {
+	t.Helper()
+
+	require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: ownershipTarget, Namespace: ownershipNS}, obj))
+}
+
+func TestOctoVault_NewTarget_HasOwnerUIDAndNoOwnerReference(t *testing.T) {
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ownershipNS}})
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Empty(t, cm.OwnerReferences, "GC must have nothing to cascade from")
+	assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID])
+	assert.Equal(t, ownershipNS, cm.Labels[LabelOVOwnerNS])
+	assert.Equal(t, "ov-ownership", cm.Labels[LabelOVOwnerName])
+}
+
+// 이전 버전이 만든 대상(ownerReference 로 소유)은 계속 관리하고, ownerReference 를 떼고 owner-uid 로 옮긴다.
+func TestOctoVault_LegacyOwnerReference_IsMigrated(t *testing.T) {
+
+	ctrlTrue := true
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: octovaultv1alpha1.GroupVersion.String(), Kind: "OctoVault", Name: "ov-ownership", UID: types.UID("ov-uid"), Controller: &ctrlTrue},
+				{APIVersion: "v1", Kind: "Unrelated", Name: "keep", UID: types.UID("unrelated-uid")},
+			},
+		},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID])
+	require.Len(t, cm.OwnerReferences, 1, "only this OctoVault's ownerReference is removed")
+	assert.Equal(t, types.UID("unrelated-uid"), cm.OwnerReferences[0].UID)
+	assert.Equal(t, "bar", cm.Data["foo"])
+}
+
+// 다른 OctoVault 가 owner-uid 로 소유한 대상은 덮어쓰지 않는다.
+func TestOctoVault_TargetOwnedByAnotherOctoVaultUID_IsRefused(t *testing.T) {
+
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{
+				AnnoOVOwnerUID:  "other-uid",
+				AnnoOVOwnerFull: ownershipNS + "/someone-else",
+			},
+		},
+		Data: map[string]string{"keep": "me"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "other-uid", cm.Annotations[AnnoOVOwnerUID])
+	assert.Equal(t, "me", cm.Data["keep"])
+}
+
+// 파이널라이저가 돌지 못하고 OctoVault 가 지워져 owner-uid 가 옛 UID 로 남은 대상은, 같은 <ns>/<name> 이라도
+// 그것만으로는 이어받지 않는다. adopt 가 붙어야 이어받는다.
+func TestOctoVault_StaleOwnerUID_IsAdoptedOnlyWithAdopt(t *testing.T) {
+
+	stale := func(extra map[string]string) *corev1.Secret {
+		ann := map[string]string{AnnoOVOwnerUID: "previous-uid", AnnoOVOwnerFull: ownershipNS + "/ov-ownership"}
+		for k, v := range extra {
+			ann[k] = v
+		}
+
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: ownershipTarget, Namespace: ownershipNS, Annotations: ann}}
+	}
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleSecretYAML, stale(nil))
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason, "the name alone is not enough")
+
+	rec, cl, ov = newOwnershipReconciler(t, sampleSecretYAML, stale(map[string]string{AnnoOVAdopt: "true"}))
+	_, updated = reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	var sec corev1.Secret
+	getTarget(t, cl, &sec)
+	assert.Equal(t, "ov-uid", sec.Annotations[AnnoOVOwnerUID])
+	assert.NotContains(t, sec.Annotations, AnnoOVAdopt)
+}
+
+func TestMapTargetToOctoVault(t *testing.T) {
+
+	longName := "ov-" + strings.Repeat("x", 80)
+	scheme := newScheme(t)
+	short := &octovaultv1alpha1.OctoVault{ObjectMeta: metav1.ObjectMeta{Name: "short", Namespace: "ns", UID: "short-uid"}}
+	long := &octovaultv1alpha1.OctoVault{ObjectMeta: metav1.ObjectMeta{Name: longName, Namespace: "ns", UID: "long-uid"}}
+	rec := &OctoVaultReconciler{Client: newFakeClient(t, scheme, short, long)}
+	ctx := context.Background()
+
+	target := func(labels, annotations map[string]string) *metav1.PartialObjectMetadata {
+		return &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "ns", Labels: labels, Annotations: annotations}}
+	}
+	names := func(obj client.Object) []string {
+		var out []string
+		for _, r := range rec.mapTargetToOctoVault(ctx, obj) {
+			out = append(out, r.Name)
+		}
+
+		return out
+	}
+
+	assert.Equal(t, []string{"short"}, names(target(map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: "short"}, nil)))
+	assert.Equal(t, []string{longName}, names(target(map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: labelSafe(longName)}, nil)),
+		"a hashed owner-name label still maps to the long-named OctoVault")
+	assert.Equal(t, []string{"short"}, names(target(nil, map[string]string{AnnoOVOwnerFull: "ns/short"})),
+		"falls back to the owner annotation when labels are gone")
+	assert.Empty(t, names(target(map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: "short"}, map[string]string{AnnoOVOwnerUID: "someone-else"})),
+		"a different owner UID does not map")
+	assert.Empty(t, names(target(nil, nil)), "objects without owner traces are ignored")
+
+	foreign := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "attacker",
+		Labels: map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: "short"}}}
+	assert.Empty(t, names(foreign), "owner labels pointing at another namespace are ignored")
+
+	foreignAnno := &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "attacker",
+		Annotations: map[string]string{AnnoOVOwnerFull: "ns/short"}}}
+	assert.Empty(t, names(foreignAnno), "an owner annotation pointing at another namespace is ignored")
+}
+
+func TestTargetChanged_OwnerUID(t *testing.T) {
+
+	base := func() *metav1.PartialObjectMetadata {
+		return &metav1.PartialObjectMetadata{ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{AnnoOVOwnerUID: "ov"}}}
+	}
+
+	removed := base()
+	delete(removed.Annotations, AnnoOVOwnerUID)
+	// 이벤트가 나야 reconcile 이 돈다. 그 reconcile 이 대상을 되찾는지는 status.targetUID 에 달렸다
+	// (TestOctoVault_StrippedOwnerUID_IsRecoveredFromStatus).
+	assert.True(t, targetChanged(base(), removed), "removing owner-uid by hand must trigger a reconcile")
+}
+
+// 업그레이드 시점에 동기화가 실패하는 OctoVault 의 대상이나, targetName 을 바꾸기 전 이름으로 남은 대상도
+// 동기화보다 먼저 ownerReference 를 떼야 한다. 남아 있으면 foreground 삭제 때 GC 가 지운다.
+func TestOctoVault_LegacyOwnerReferences_AreMigratedEvenWhenSyncFails(t *testing.T) {
+
+	ctrlTrue := true
+	legacy := func(name string) metav1.ObjectMeta {
+		return metav1.ObjectMeta{
+			Name: name, Namespace: ownershipNS,
+			Labels: map[string]string{LabelOVOwnerNS: ownershipNS, LabelOVOwnerName: "ov-ownership"},
+			OwnerReferences: []metav1.OwnerReference{
+				{APIVersion: octovaultv1alpha1.GroupVersion.String(), Kind: "OctoVault", Name: "ov-ownership", UID: types.UID("ov-uid"), Controller: &ctrlTrue},
+			},
+		}
+	}
+
+	oldName := &corev1.ConfigMap{ObjectMeta: legacy("previous-target-name")}
+	rec, cl, ov := newOwnershipReconciler(t, invalidTypeYAML, oldName)
+	require.NoError(t, cl.Create(context.Background(), &corev1.Secret{ObjectMeta: legacy("legacy-secret")}))
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseFailed, updated.Status.Phase, "the sync itself fails")
+
+	for _, obj := range []client.Object{&corev1.ConfigMap{}, &corev1.Secret{}} {
+		name := "previous-target-name"
+		if _, isSecret := obj.(*corev1.Secret); isSecret {
+
+			name = "legacy-secret"
+		}
+
+		require.NoError(t, cl.Get(context.Background(), client.ObjectKey{Name: name, Namespace: ownershipNS}, obj))
+		assert.Empty(t, obj.GetOwnerReferences(), "%s: the legacy ownerReference must be removed", name)
+		assert.Equal(t, "ov-uid", obj.GetAnnotations()[AnnoOVOwnerUID], "%s: owner-uid must be set", name)
+	}
+}
+
+// 한 번 모두 옮긴 뒤에는 poll 마다 대상을 다시 찾지 않는다.
+func TestOctoVault_LegacyOwnerReferenceMigration_RunsOnce(t *testing.T) {
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ownershipNS}})
+
+	secretLists := 0
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.SecretList); ok {
+
+				secretLists++
+			}
+
+			return c.List(ctx, list, opts...)
+		},
+	})
+
+	for range 3 {
+		reconcileOwnership(t, rec, cl, ov)
+	}
+
+	assert.Equal(t, 1, secretLists)
+}
+
+// 대상 Update 가 conflict 로 실패하면(캐시가 늦음) 실패 상태로 바꾸지 않고 곧 다시 시도한다.
+func TestOctoVault_TargetUpdateConflict_RetriesWithoutFailing(t *testing.T) {
+
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: ownershipNS}})
+
+	_, synced := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, synced.Status.Phase)
+
+	// 값을 바꿔 Update 가 필요하게 만들고, 그 Update 를 conflict 로 실패시킨다.
+	rec.Git = &staticFetcher{files: map[string][]byte{ownershipPath: []byte("metadata:\n  type: ConfigMap\nspec:\n  data:\n    - key: foo\n      value: changed\n")}, rev: "rev2"}
+	rec.Client = interceptor.NewClient(cl.(client.WithWatch), interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*corev1.ConfigMap); ok {
+
+				return apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, obj.GetName(), errors.New("stale"))
+			}
+
+			return c.Update(ctx, obj, opts...)
+		},
+	})
+
+	for i := range maxSilentTargetConflicts {
+		res, updated := reconcileOwnership(t, rec, cl, ov)
+		assert.Equal(t, StatusRetryInterval, res.RequeueAfter, "attempt %d", i+1)
+		assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase, "a conflict is not a failure at first")
+	}
+
+	// 계속 이어지면(다른 컨트롤러와 경합) 조용히 넘기지 않고 드러낸다.
+	key := client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}
+	_, err := rec.Reconcile(context.Background(), reconcile.Request{NamespacedName: key})
+	require.Error(t, err)
+
+	var updated octovaultv1alpha1.OctoVault
+	require.NoError(t, cl.Get(context.Background(), key, &updated))
+	assert.Equal(t, "ApplyFailed", updated.Status.Conditions[0].Reason, "persistent conflicts must become visible")
+}
+
+// owner-uid 가 살아 있는 다른 OctoVault 를 가리키면, adopt 가 있어도 가져오지 않는다.
+// 같은 targetName 을 쓰는 두 OctoVault 사이에서 소유권이 번갈아 바뀌는 것을 막는다.
+func TestOctoVault_AdoptDoesNotStealFromALiveOctoVault(t *testing.T) {
+
+	ctx := context.Background()
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS,
+			Annotations: map[string]string{AnnoOVOwnerUID: "uid-of-a", AnnoOVAdopt: "true"},
+		},
+		Data: map[string]string{"owned": "by-a"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	a := &octovaultv1alpha1.OctoVault{
+		ObjectMeta: metav1.ObjectMeta{Name: "ov-a", Namespace: ownershipNS, UID: types.UID("uid-of-a")},
+		Spec: octovaultv1alpha1.OctoVaultSpec{
+			OctoRepositoryRef: octovaultv1alpha1.LocalObjectRef{Name: "orepo-ownership"},
+			Repository:        "test-org/test-repo",
+			Path:              ownershipPath,
+			TargetName:        ownershipTarget,
+		},
+	}
+	require.NoError(t, cl.Create(ctx, a))
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "uid-of-a", cm.Annotations[AnnoOVOwnerUID], "A keeps the target")
+	assert.Equal(t, "by-a", cm.Data["owned"])
+
+	// A 가 지워지고 나면 adopt 로 이어받을 수 있다.
+	require.NoError(t, cl.Delete(ctx, a))
+	_, updated = reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID])
+}
+
+// owner-uid 가 지워진 대상(옛 manifest 를 다시 apply 하는 등)도, 이 OctoVault 가 마지막으로 쓴 그 객체면
+// status.targetUID 로 되찾고 owner-uid 를 다시 써 넣는다. 다른 객체는 여전히 거부한다.
+func TestOctoVault_StrippedOwnerUID_IsRecoveredFromStatus(t *testing.T) {
+
+	stripped := func(uid string) *corev1.ConfigMap {
+		return &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: ownershipTarget, Namespace: ownershipNS, UID: types.UID(uid),
+				Labels:      map[string]string{LabelOVOwnerNS: ownershipNS, LabelOVOwnerName: "ov-ownership"},
+				Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-ownership"},
+			},
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		objUID string
+		synced bool
+	}{
+		{name: "same object", objUID: targetObjUID, synced: true},
+		{name: "another object with the same name", objUID: "replacement-uid", synced: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+
+			rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, stripped(tc.objUID))
+			ov.Status.TargetUID = targetObjUID
+			require.NoError(t, cl.Status().Update(context.Background(), ov))
+
+			_, updated := reconcileOwnership(t, rec, cl, ov)
+
+			var cm corev1.ConfigMap
+			getTarget(t, cl, &cm)
+			if !tc.synced {
+
+				assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+				assert.NotContains(t, cm.Annotations, AnnoOVOwnerUID)
+				return
+			}
+
+			require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+			assert.Equal(t, "ov-uid", cm.Annotations[AnnoOVOwnerUID], "owner-uid must be written back")
+			assert.Equal(t, "bar", cm.Data["foo"])
+			assert.Equal(t, targetObjUID, updated.Status.TargetUID)
+		})
+	}
+}
+
+// 동기화하면 쓴 대상의 UID 가 status.targetUID 에 남는다.
+func TestOctoVault_Sync_RecordsTargetUID(t *testing.T) {
+
+	existing := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name: ownershipTarget, Namespace: ownershipNS, UID: types.UID(targetObjUID),
+		Annotations: map[string]string{AnnoOVOwnerUID: "ov-uid"},
+	}}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, existing)
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	require.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+	assert.Equal(t, targetObjUID, updated.Status.TargetUID)
+}
+
+// 다른 OctoVault 가 adopt 로 가져간 대상은, 그 뒤 owner-uid 가 지워져도 이전 소유자가 status.targetUID 만으로
+// 되가져가지 않는다(가져간 쪽이 owner 라벨을 자기 것으로 다시 썼다). TargetNotOwned 를 기록하면서
+// status.targetUID 도 비운다.
+func TestOctoVault_TargetAdoptedAway_IsNotReclaimedThroughTargetUID(t *testing.T) {
+
+	adoptedAway := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ownershipTarget, Namespace: ownershipNS, UID: types.UID(targetObjUID),
+			Labels:      map[string]string{LabelOVOwnerNS: ownershipNS, LabelOVOwnerName: "ov-b"},
+			Annotations: map[string]string{AnnoOVOwnerFull: ownershipNS + "/ov-b"},
+		},
+		Data: map[string]string{"keep": "me"},
+	}
+	rec, cl, ov := newOwnershipReconciler(t, sampleConfigMapYAML, adoptedAway)
+	ov.Status.TargetUID = targetObjUID
+	require.NoError(t, cl.Status().Update(context.Background(), ov))
+
+	_, updated := reconcileOwnership(t, rec, cl, ov)
+	assert.Equal(t, "TargetNotOwned", updated.Status.Conditions[0].Reason)
+	assert.Empty(t, updated.Status.TargetUID, "a target this OctoVault no longer owns must not stay recorded")
+
+	var cm corev1.ConfigMap
+	getTarget(t, cl, &cm)
+	assert.Equal(t, "me", cm.Data["keep"])
+}
+
+// OctoVault 를 지울 때, owner-uid 가 이미 지워졌어도 status.targetUID 로 확인되는 대상에는 retained-from 을
+// 남긴다. 남기지 않으면 roll-forward 안내의 필터가 그 대상을 걸러내지 못한다.
+func TestReleaseTarget_UsesOwnedBy(t *testing.T) {
+
+	ov := &octovaultv1alpha1.OctoVault{ObjectMeta: metav1.ObjectMeta{Name: "ov", Namespace: "ns", UID: "ov-uid"}}
+	ov.Status.TargetUID = targetObjUID
+	labels := func(name string) map[string]string {
+		return map[string]string{LabelOVOwnerNS: "ns", LabelOVOwnerName: name}
+	}
+
+	stripped := &metav1.ObjectMeta{UID: targetObjUID, Labels: labels("ov")}
+	require.True(t, releaseTarget(stripped, ov))
+	assert.Equal(t, "ns/ov", stripped.Annotations[AnnoOVRetainedBy])
+	assert.False(t, releaseTarget(stripped, ov), "releasing twice changes nothing")
+
+	owned := &metav1.ObjectMeta{UID: "other", Annotations: map[string]string{AnnoOVOwnerUID: "ov-uid"}}
+	require.True(t, releaseTarget(owned, ov))
+	assert.NotContains(t, owned.Annotations, AnnoOVOwnerUID)
+	assert.Equal(t, "ns/ov", owned.Annotations[AnnoOVRetainedBy])
+
+	for name, obj := range map[string]*metav1.ObjectMeta{
+		"another OctoVault's owner-uid":     {UID: targetObjUID, Labels: labels("ov"), Annotations: map[string]string{AnnoOVOwnerUID: "b-uid"}},
+		"labels point at another OctoVault": {UID: targetObjUID, Labels: labels("ov-b")},
+		"a different object":                {UID: "other", Labels: labels("ov")},
+	} {
+		assert.False(t, releaseTarget(obj, ov), name)
+		assert.NotContains(t, obj.Annotations, AnnoOVRetainedBy, name)
+	}
+}

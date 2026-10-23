@@ -35,7 +35,7 @@ of being corrected. Other drift (labels added by third parties, `Secret`
 data edits) is corrected at the next poll, so labels injected by mutating webhooks or policy engines don't
 cause a reconcile loop. Something that keeps rewriting the `ConfigMap` data will still trigger a reconcile
 (and a conditional GitHub request) every time it does so; don't point another controller at the same data. If `metadata.type` switches between `ConfigMap` and
-`Secret`, the previous object (if this `OctoVault` controls it) is deleted.
+`Secret`, the previous object (if this `OctoVault` owns it) is deleted.
 The one exception to "right away": while the credential's token is rate limited (`RateLimited`), nothing is
 fetched, so a deleted target is recreated only after the limit resets.
 
@@ -329,6 +329,47 @@ Breaking changes to check before upgrading:
   kubectl apply -f charts/octovault/crds/
   ```
 
+- **Targets no longer carry an `ownerReference`.** Earlier versions made each target a dependent of its
+  `OctoVault`. On the first reconcile after the upgrade, before anything is fetched and even if the sync
+  then fails, every target the `OctoVault` created (found through its owner labels, including ones left
+  under a previous `targetName`) is migrated: the `ownerReference` is removed and `octovault.it/owner-uid`
+  is set. A foreground deletion issued before the upgraded controller has reconciled an `OctoVault` can
+  still remove its targets.
+
+  **Rolling back and forward again.** Rolling back to an earlier release works: that release does not check
+  ownership, so it keeps syncing the targets. But it rewrites each target's annotations and drops
+  `octovault.it/owner-uid`, and it does not put the `ownerReference` back. Its status writes also drop
+  `status.targetUID`. After upgrading again those targets carry no ownership marker, so their `OctoVault`s
+  fail with `TargetNotOwned`. Mark them for adoption once, as someone allowed to edit them. Only mark targets
+  whose `octovault.it/owner` names an `OctoVault` that exists, that were not left behind by a deleted one
+  (`octovault.it/retained-from`), and that were created after that `OctoVault`. An `adopt` on a target left
+  behind stays unused, and later lets anyone who creates an `OctoVault` with that `targetName` take the target
+  over. The creation-time check matters because the earlier release only writes `retained-from` when it
+  removes an `ownerReference`, which upgraded targets no longer have: a target whose `OctoVault` was deleted
+  and recreated under the same name during the rollback carries no marker, but it is older than the
+  `OctoVault` that now has the name.
+
+  ```bash
+  live=$(kubectl get octovault -A -o json \
+    | jq -c '[.items[] | {key: "\(.metadata.namespace)/\(.metadata.name)", value: .metadata.creationTimestamp}] | from_entries')
+  kubectl get configmap,secret -A -l app.kubernetes.io/managed-by=octovault -o json \
+    | jq -r --argjson live "$live" '.items[]
+        | (.metadata.annotations // {}) as $a
+        | select(($a["octovault.it/owner-uid"] // "") == "" and $a["octovault.it/retained-from"] == null)
+        | select($live[$a["octovault.it/owner"] // ""] as $ovCreated
+                 | $ovCreated != null and .metadata.creationTimestamp >= $ovCreated)
+        | "\(.metadata.namespace) \(.kind | ascii_downcase)/\(.metadata.name)"' \
+    | while read -r ns obj; do kubectl annotate -n "$ns" "$obj" octovault.it/adopt=true --overwrite; done
+  ```
+
+  The filter errs on the safe side and also skips some targets that belong to their `OctoVault`: targets older
+  than it (one it adopted, or one rewritten after a Helm reinstall on the earlier release), and, for
+  `OctoVault` names longer than 63 characters, every target, because `octovault.it/owner` then holds a
+  shortened name (see below). Their data is not overwritten; the `OctoVault` just stays `TargetNotOwned`.
+  After running the script, list the `OctoVault`s that are still `TargetNotOwned` (the jq command under
+  "Existing objects not created by OctoVault" above), check each target by hand, and add
+  `octovault.it/adopt: "true"` to the ones that are theirs.
+
 ### Manual CRDs
 
 If you prefer manual steps:
@@ -401,15 +442,26 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
     - The token is read from the Secret's `data.password` only (annotations are not accepted).
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
 - **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
-- Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
-  `OctoVault` does not delete its targets: the finalizer removes the `ownerReference` first (see below).
-- An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
-  Exception: an existing target with no controller is adopted if it carries `octovault.it/adopt: "true"`.
+- Operator writes into the target namespace. Targets are marked with the owning `OctoVault`'s UID
+  (`octovault.it/owner-uid`) plus owner labels, **not** with `ownerReferences`, so Kubernetes garbage
+  collection never deletes them: deleting an `OctoVault` keeps its targets with any deletion mode, including
+  foreground deletion (`kubectl delete --cascade=foreground`, Argo CD app deletion). Delete the targets
+  yourself if you no longer need them. (Targets therefore don't show up under the `OctoVault` in owner-tree
+  tools such as `kubectl tree`.)
+- An existing `ConfigMap`/`Secret` with the target name that this `OctoVault` does not own is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
+  If `octovault.it/owner-uid` is removed from a target (for example by re-applying an old manifest, or by a
+  tool that rewrites all annotations), the `OctoVault` still recognizes the object it last wrote through
+  `status.targetUID` and writes the annotation back, as long as the owner labels (`octovault.it/owner-ns`,
+  `octovault.it/owner-name`) still point at it. A different object with the same name is not owned, and an
+  `OctoVault` that reports `TargetNotOwned` (for example after another one adopted the target) forgets it.
+  Exception: an existing target not managed by another controller is adopted if it carries `octovault.it/adopt: "true"`.
   Deleting an `OctoVault` leaves its targets behind (with `octovault.it/retained-from: <ns>/<name>`); to have a
   recreated `OctoVault` (e.g. after a Helm/Argo reinstall) manage them again, add that annotation to each
   target, or delete the targets. Targets are never adopted by name alone: otherwise anyone allowed to create an
   `OctoVault` could overwrite a retained `Secret` they cannot edit. The annotation is consumed on adoption, and
-  it cannot be set through `values.yaml`. For `OctoVault` names longer than 63 characters the `<name>` part of
+  it cannot be set through `values.yaml`. `adopt: "true"` does not name an `OctoVault`: any `OctoVault` in the
+  same namespace whose `targetName` matches can take the target, so only add it once the intended `OctoVault`
+  exists (it adopts on its next reconcile, within a moment of the annotation being added). For `OctoVault` names longer than 63 characters the `<name>` part of
   `octovault.it/owner` (and the `octovault.it/owner-name` label) is shortened to its first 31 characters plus a
   hash.
 

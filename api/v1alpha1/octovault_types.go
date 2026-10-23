@@ -121,6 +121,12 @@ type OctoVaultStatus struct {
 	// +optional
 	ResolvedType string `json:"resolvedType,omitempty"` // ConfigMap | Secret
 
+	// TargetUID 마지막으로 만들거나 갱신한 대상(ConfigMap/Secret)의 UID. 대상의 octovault.it/owner-uid
+	// 어노테이션이 지워져도(예: 옛 manifest 를 다시 apply) 이 값으로 소유를 확인하고 어노테이션을 되살린다.
+	// 컨트롤러만 쓴다.
+	// +optional
+	TargetUID string `json:"targetUID,omitempty"`
+
 	// ObservedRef 마지막 동기화에 쓴 git ref (spec.gitRef, 비었으면 GIT_REF).
 	// 둘 다 비어 있으면 저장소 기본 브랜치를 썼다는 뜻으로 비워 둔다.
 	// +optional
