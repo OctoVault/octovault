@@ -55,6 +55,16 @@ spec:
           spec:
             description: spec defines the desired state of OctoRepository
             properties:
+              allowedNamespaces:
+                description: |-
+                  AllowedNamespaces lists the namespaces whose OctoVaults may use this OctoRepository.
+                  The credentials can read every repository the token can, so restrict this in
+                  multi-tenant clusters. When empty, OctoVaults in any namespace may use it.
+                items:
+                  minLength: 1
+                  type: string
+                type: array
+                x-kubernetes-list-type: set
               credentialsRef:
                 description: CredentialsRef is a reference to the Secret Object which
                   stores credentials to GitHub repository.

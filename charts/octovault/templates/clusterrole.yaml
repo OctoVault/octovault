@@ -23,4 +23,9 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create","patch"]
+  # Startup check that the installed OctoRepository CRD is current (cmd/crd_check.go).
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames: ["octorepositories.octovault.it"]
+    verbs: ["get"]
 {{- end }}

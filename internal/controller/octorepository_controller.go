@@ -52,6 +52,7 @@ const (
 )
 
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get,resourceNames=octorepositories.octovault.it
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch

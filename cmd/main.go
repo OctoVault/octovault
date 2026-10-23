@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -414,6 +415,21 @@ func main() {
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	// 옛 CRD 로는 allowedNamespaces 가 조용히 무시되므로(제한 해제) 시작하지 않는다. CRD 를 읽지 못해
+	// 확인할 수 없는 경우(권한 없음 등)도 같다. 그 상태로 시작하면 옛 CRD 인지 알 수 없어 제한이 풀린 채
+	// 돌 수 있다. 일시적인 오류라면 재시작하면서 다시 확인한다.
+	if err := verifyCRDs(context.Background(), mgr.GetAPIReader()); err != nil {
+
+		setupLog.Error(err, "refusing to start: the installed CRDs could not be confirmed to be current")
+		os.Exit(1)
+	}
+
+	if err := mgr.Add(manager.RunnableFunc(watchCRDs(mgr.GetAPIReader(), crdRecheckInterval))); err != nil {
+
+		setupLog.Error(err, "unable to set up the CRD re-check")
 		os.Exit(1)
 	}
 
