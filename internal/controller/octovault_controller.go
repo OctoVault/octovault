@@ -36,11 +36,13 @@ import (
 	ghclient "github.com/octovault/octovault/internal/github"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"sigs.k8s.io/yaml"
 
@@ -177,6 +179,11 @@ type OctoVaultReconciler struct {
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 
+	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
+	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
+	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
+	TargetSecrets cache.Cache
+
 	// DefaultRef spec.gitRef 가 비었을 때 Git 이 쓰는 ref(GIT_REF). status.observedRef 표시에만 쓴다.
 	DefaultRef string
 }
@@ -185,7 +192,7 @@ type OctoVaultReconciler struct {
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/finalizers,verbs=update
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -319,7 +326,21 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
-	// 5) status
+	// 5) 방금 적용한 것과 다른 종류의 대상이 이 OctoVault 소유로 남아 있으면 지운다(metadata.type 전환).
+	//
+	// "정리가 필요하다"는 기록을 상태에 따로 두지 않고 매번 확인한다. Ready reason 같은 기록은
+	// 사이에 끼는 다른 실패(FetchFailed 등)에 덮어써져 재시도가 사라질 수 있다. 확인은 캐시에서
+	// 하므로(ConfigMap 은 기본 캐시, Secret 은 메타데이터 캐시) 남은 대상이 없으면 API 호출이 없다.
+	// 실패해도 ResolvedType 은 실제로 적용한 종류로 기록해 상태가 사실과 어긋나지 않게 한다.
+	if err := r.deleteStaleTarget(ctx, &ov, otherOutputKind(resolvedType)); err != nil {
+
+		r.updateStatusIfChanged(ctx, &ov, fail(r.syncedStatus(&ov, applied), ReasonStaleTargetCleanupFailed,
+			fmt.Sprintf("applied %s but failed to delete the previous %s %s/%s: %v",
+				resolvedType, otherOutputKind(resolvedType), targetNS, ov.Spec.TargetName, err)))
+		return ctrl.Result{RequeueAfter: poll}, nil
+	}
+
+	// 6) status
 	r.setSyncedStatus(ctx, &ov, applied)
 
 	return ctrl.Result{RequeueAfter: poll}, nil
@@ -661,6 +682,35 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 	return appliedOutput{resolvedType: resolvedType, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
 }
 
+// ReasonStaleTargetCleanupFailed 타입 전환 후 이전 종류의 대상을 지우지 못했다. 다음 poll 에서 다시 시도한다.
+const ReasonStaleTargetCleanupFailed = "StaleTargetCleanupFailed"
+
+// staleSecretExpected 이전 출력이 Secret 이었거나 지난 정리가 실패해, 남은 Secret 이 있을 수 있다.
+func staleSecretExpected(ov *octovaultv1alpha1.OctoVault) bool {
+	if ov.Status.ResolvedType == string(octovaultv1alpha1.OutputSecret) {
+
+		return true
+	}
+
+	for _, c := range ov.Status.Conditions {
+		if c.Type == CondReady && c.Reason == ReasonStaleTargetCleanupFailed {
+
+			return true
+		}
+	}
+
+	return false
+}
+
+func otherOutputKind(kind string) string {
+	if kind == string(octovaultv1alpha1.OutputConfigMap) {
+
+		return string(octovaultv1alpha1.OutputSecret)
+	}
+
+	return string(octovaultv1alpha1.OutputConfigMap)
+}
+
 func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovaultv1alpha1.OctoVault, out appliedOutput) {
 
 	targetNS := ov.Spec.TargetNamespace
@@ -668,6 +718,18 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 
 		targetNS = ov.Namespace
 	}
+
+	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
+	// 의미 없는 이벤트가 쌓인다.
+	if r.updateStatusIfChanged(ctx, ov, r.syncedStatus(ov, out)) {
+
+		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
+			"OctoVault synced: revision=%s, type=%s, target=%s/%s", out.rev, out.resolvedType, targetNS, ov.Spec.TargetName)
+	}
+}
+
+// syncedStatus 적용 결과를 반영한 Synced 상태. 기록은 호출자가 한다.
+func (r *OctoVaultReconciler) syncedStatus(ov *octovaultv1alpha1.OctoVault, out appliedOutput) octovaultv1alpha1.OctoVaultStatus {
 
 	now := metav1.Now()
 	next := ov.Status
@@ -682,13 +744,7 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next.ExternalRefsSummary = summarizeExtRefs(out.extRefs)
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
-	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
-	// 의미 없는 이벤트가 쌓인다.
-	if r.updateStatusIfChanged(ctx, ov, next) {
-
-		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
-			"OctoVault synced: revision=%s, type=%s, target=%s/%s", out.rev, out.resolvedType, targetNS, ov.Spec.TargetName)
-	}
+	return next
 }
 
 // effectiveRef 동기화에 쓴 ref. 둘 다 비어 있으면 저장소의 기본 브랜치를 뜻하는 빈 문자열이다.
@@ -751,16 +807,20 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 	if !adopted &&
 		reflect.DeepEqual(cm.Labels, desiredLabels) &&
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
-		reflect.DeepEqual(cm.Data, data) {
+		reflect.DeepEqual(cm.Data, data) &&
+		len(cm.BinaryData) == 0 {
 		return nil
 	}
 
 	// OctoVault owns the resource it creates; labels/annotations are fully replaced
 	// by the desired state (system + user-specified keys). Third-party keys not
 	// declared in values.yaml are intentionally pruned on each reconcile.
+	// values.yaml 은 binaryData 를 만들지 않으므로, 손으로 넣은 binaryData 도 지운다(watch 가 반응하는 변경을
+	// 실제로 되돌리지 않으면 이벤트마다 reconcile 만 돈다).
 	cm.Labels = desiredLabels
 	cm.Annotations = desiredAnnotations
 	cm.Data = data
+	cm.BinaryData = nil
 
 	return r.Update(ctx, &cm)
 }
@@ -846,6 +906,63 @@ func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopt
 	obj.OwnerReferences = append(obj.OwnerReferences, *metav1.NewControllerRef(ov, ov.GroupVersionKind()))
 
 	return true, true
+}
+
+// deleteStaleTarget 이전 종류(kind)의 대상을 지운다. 이 OctoVault 가 소유한 것만 지운다.
+func (r *OctoVaultReconciler) deleteStaleTarget(ctx context.Context, ov *octovaultv1alpha1.OctoVault, kind string) error {
+
+	key := types.NamespacedName{Namespace: ov.Namespace, Name: ov.Spec.TargetName}
+
+	var obj client.Object
+	switch kind {
+	case string(octovaultv1alpha1.OutputConfigMap):
+		obj = &corev1.ConfigMap{}
+	case string(octovaultv1alpha1.OutputSecret):
+		// Secret 조회는 캐시를 거치지 않으므로, 평소에는 매 poll 마다 API 를 부르지 않도록 메타데이터
+		// 캐시로 먼저 존재와 소유를 확인한다. 지우는 데에는 이름과 UID 만 있으면 된다.
+		// 다만 이 캐시는 managed-by 라벨로 범위가 좁혀져 있어, 라벨이 바뀐 Secret 은 보이지 않는다.
+		// 남은 Secret 이 있을 법한 때(방금 Secret 에서 바뀌었거나 지난 정리가 실패했을 때)는 API 를 본다.
+		if r.TargetSecrets != nil && !staleSecretExpected(ov) {
+
+			secretMeta := &metav1.PartialObjectMetadata{}
+			secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+			if err := r.TargetSecrets.Get(ctx, key, secretMeta); err != nil {
+
+				return client.IgnoreNotFound(err)
+			}
+
+			if !metav1.IsControlledBy(secretMeta, ov) {
+
+				return nil
+			}
+
+			return r.deleteWithUID(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}, secretMeta.UID)
+		}
+
+		obj = &corev1.Secret{}
+	default:
+		return nil
+	}
+
+	if err := r.Get(ctx, key, obj); err != nil {
+
+		return client.IgnoreNotFound(err)
+	}
+
+	if !metav1.IsControlledBy(obj, ov) {
+
+		return nil
+	}
+
+	return r.deleteWithUID(ctx, obj, obj.GetUID())
+}
+
+// deleteWithUID 조회와 삭제 사이에 같은 이름으로 다시 만들어진 객체를 지우지 않도록 UID 를 고정해 지운다.
+func (r *OctoVaultReconciler) deleteWithUID(ctx context.Context, obj client.Object, uid types.UID) error {
+
+	err := r.Delete(ctx, obj, client.Preconditions{UID: &uid})
+
+	return client.IgnoreNotFound(err)
 }
 
 func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1alpha1.OctoVault) error {
@@ -1176,6 +1293,22 @@ func (r *OctoVaultReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// 전체 fan-out -> 요청 폭증 -> 한도 더 초과 로 이어지는 양성 피드백 루프가 된다.
 	b = b.Watches(&octovaultv1alpha1.OctoRepository{}, mapOrepoToOV,
 		builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+
+	// 대상이 지워지거나 컨트롤러가 책임지는 부분이 손으로 바뀌면 poll 주기를 기다리지 않고 바로
+	// 되돌린다. 어떤 변경에 반응하는지는 targetEventFilter 를 본다.
+	// 컨트롤러 자신의 갱신도 이벤트가 되지만, 다음 reconcile 에서 바뀐 것이 없어 끝난다.
+	b = b.Owns(&corev1.ConfigMap{}, builder.WithPredicates(targetEventFilter[client.Object]()))
+
+	if r.TargetSecrets != nil {
+
+		secretMeta := &metav1.PartialObjectMetadata{}
+		secretMeta.SetGroupVersionKind(corev1.SchemeGroupVersion.WithKind("Secret"))
+
+		b = b.WatchesRawSource(source.Kind(r.TargetSecrets, secretMeta,
+			handler.TypedEnqueueRequestForOwner[*metav1.PartialObjectMetadata](
+				mgr.GetScheme(), mgr.GetRESTMapper(), &octovaultv1alpha1.OctoVault{}, handler.OnlyControllerOwner()),
+			targetEventFilter[*metav1.PartialObjectMetadata]()))
+	}
 
 	return b.Complete(r)
 }

@@ -18,11 +18,12 @@ rules:
   - apiGroups: ["octovault.it"]
     resources: ["octorepositories/finalizers", "octovaults/finalizers"]
     verbs: ["update"]
-  # Core: the controller never deletes Secrets or ConfigMaps; targets are
-  # garbage-collected through ownerReferences.
+  # Core: delete is used only to remove the previous target when an
+  # OctoVault's metadata.type switches between ConfigMap and Secret, and only
+  # for objects that OctoVault controls.
   - apiGroups: [""]
     resources: ["secrets", "configmaps"]
-    verbs: ["create", "get", "list", "patch", "update", "watch"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

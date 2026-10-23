@@ -354,3 +354,29 @@ func TestOctoVault_Secret_UserLabels_RemovedWhenNotInValues(t *testing.T) {
 	// 시스템 labels 유지됨
 	assert.Equal(t, "octovault", updated.Labels[LabelManagedBy], "system label must be preserved after user labels removal on Secret")
 }
+
+// 손으로 넣은 binaryData 는 지운다. watch 는 binaryData 변경에 반응하므로 실제로 되돌려야 한다.
+func TestOctoVault_ConfigMap_BinaryData_IsRemoved(t *testing.T) {
+
+	ctx := context.Background()
+	const path = "values/binary.yaml"
+
+	rec, cl, ov := newUpdateMetaReconciler(t, path, &staticFetcher{files: map[string][]byte{path: sampleConfigMapYAML}, rev: "rev1"})
+	req := reconcile.Request{NamespacedName: client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}}
+
+	_, err := rec.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var cm corev1.ConfigMap
+	key := client.ObjectKey{Name: ov.Spec.TargetName, Namespace: ov.Namespace}
+	require.NoError(t, cl.Get(ctx, key, &cm))
+	cm.BinaryData = map[string][]byte{"injected": {1, 2, 3}}
+	require.NoError(t, cl.Update(ctx, &cm))
+
+	_, err = rec.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	require.NoError(t, cl.Get(ctx, key, &cm))
+	assert.Empty(t, cm.BinaryData)
+	assert.Equal(t, "bar", cm.Data["foo"])
+}
