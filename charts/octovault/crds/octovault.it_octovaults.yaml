@@ -24,7 +24,7 @@ spec:
     - jsonPath: .spec.repository
       name: Repo
       type: string
-    - jsonPath: .spec.observedRef
+    - jsonPath: .status.observedRef
       name: Ref
       type: string
     - jsonPath: .status.resolvedType
@@ -205,6 +205,9 @@ spec:
               message:
                 type: string
               observedRef:
+                description: |-
+                  ObservedRef 마지막 동기화에 쓴 git ref (spec.gitRef, 비었으면 GIT_REF).
+                  둘 다 비어 있으면 저장소 기본 브랜치를 썼다는 뜻으로 비워 둔다.
                 type: string
               observedRevision:
                 type: string

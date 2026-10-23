@@ -76,4 +76,10 @@ func TestOctoVault_ParameterStore_WithDecryption_IsPassedThrough(t *testing.T) {
 	var updated octovaultv1alpha1.OctoVault
 	require.NoError(t, cl.Get(ctx, client.ObjectKey{Name: ov.Name, Namespace: ov.Namespace}, &updated))
 	assert.Equal(t, octovaultv1alpha1.OVPhaseSynced, updated.Status.Phase)
+
+	require.Len(t, updated.Status.ExternalRefs, 3)
+	assert.Equal(t, octovaultv1alpha1.ExternalRefStatus{
+		Provider: "AwsParameterStore", Name: "/p/plain", VersionID: "7", Key: "PLAIN",
+	}, updated.Status.ExternalRefs[1])
+	assert.Contains(t, updated.Status.ExternalRefsSummary, "PLAIN=/p/plain@7")
 }

@@ -377,7 +377,8 @@ func main() {
 		AwsSM:    awsSMProv,
 		AwsPS:    awsPSProv,
 
-		Validator: validator,
+		Validator:  validator,
+		DefaultRef: gitRef,
 
 		SecretCache: mgr.GetCache(),
 	}).SetupWithManager(mgr); err != nil {
