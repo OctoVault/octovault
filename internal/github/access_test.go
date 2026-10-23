@@ -222,3 +222,80 @@ func TestAccessChecker_RejectsEmptyOwner(t *testing.T) {
 	require.Error(t, c.Check(ctx, "github.com/", "tok"))
 	require.Empty(t, stub.requests)
 }
+
+// 클래식 PAT 의 X-OAuth-Scopes 에 "repo" 가 없으면 public 저장소로 제한된다고 알려야 한다.
+// 헤더가 없으면(fine-grained PAT, GitHub App) 판단하지 않는다.
+func TestAccessChecker_ReportsPublicOnlyScope(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name    string
+		scopes  []string // nil = 헤더 없음
+		limited bool
+	}{
+		{name: "repo scope", scopes: []string{"read:org, repo"}, limited: false},
+		{name: "public_repo only", scopes: []string{"public_repo, read:org"}, limited: true},
+		{name: "empty header (unknown token type)", scopes: []string{""}, limited: false},
+		{name: "fine-grained (no header)", scopes: nil, limited: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Unix(1_700_000_000, 0)
+			stub := &stubRT{t: t}
+			stub.handler = func(r *http.Request) (*http.Response, error) {
+
+				resp := jsonResp(http.StatusOK, []any{})
+				for _, v := range tc.scopes {
+					resp.Header.Add("X-OAuth-Scopes", v)
+				}
+
+				return resp, nil
+			}
+
+			c := newTestChecker(t, stub, &now)
+
+			res, err := c.CheckAccess(ctx, "github.com/acme", "tok")
+			require.NoError(t, err)
+			require.Equal(t, tc.limited, res.LimitedToPublic)
+
+			// 캐시 적중에서도 같은 결과를 돌려줘야 한다.
+			cached, err := c.CheckAccess(ctx, "github.com/acme", "tok")
+			require.NoError(t, err)
+			require.Equal(t, tc.limited, cached.LimitedToPublic)
+			require.Len(t, stub.requests, 1)
+		})
+	}
+}
+
+// 개인 계정(조직 프로브 404, 사용자 프로브 200)에서도 public 전용 토큰을 감지하고, 캐시 적중에서도 유지해야 한다.
+func TestAccessChecker_PersonalAccount_ReportsPublicOnlyScope(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(r.URL.Path, "/orgs/") {
+
+			return jsonResp(http.StatusNotFound, nil), nil
+		}
+
+		resp := jsonResp(http.StatusOK, []any{})
+		resp.Header.Set("X-OAuth-Scopes", "public_repo, gist")
+
+		return resp, nil
+	}
+
+	c := newTestChecker(t, stub, &now)
+
+	res, err := c.CheckAccess(ctx, "github.com/someone", "tok")
+	require.NoError(t, err)
+	require.True(t, res.LimitedToPublic)
+	require.Len(t, stub.requests, 2, "org probe, then user probe")
+
+	now = now.Add(11 * time.Minute)
+	res, err = c.CheckAccess(ctx, "github.com/someone", "tok")
+	require.NoError(t, err)
+	require.True(t, res.LimitedToPublic)
+	require.Len(t, stub.requests, 3, "a known personal account goes straight to the user probe")
+}

@@ -272,6 +272,21 @@ controller:
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
     AWS_PS_TTL: "3m"     # AWS Parameter Store cache TTL. Default 1m
 ```
+### Upgrading
+
+Breaking changes to check before upgrading:
+
+- **`spec.repository` owners must match the `OctoRepository` organization.** Earlier versions ignored the
+  owner part of `owner/repo` and silently read `<organization>/<repo>`. An `OctoVault` whose owner differs
+  now fails with reason `RepositoryOwnerMismatch`; fix the owner or drop it (a bare `repo` still resolves
+  against the organization).
+
+- **Credentials from Secret annotations are no longer read.** Earlier versions let an `OctoVault` take the
+  token from the `octovault.it/password` annotation, and the encoding from `octovault.it/passwordEncoding`,
+  when the Secret's data had no `password`. Move both into the Secret's data (`password`, `passwordEncoding`).
+  Otherwise the `OctoVault` fails with `SecretMissingPassword`, or authentication fails with 401 if only the
+  encoding was in an annotation.
+
 ### Manual CRDs
 
 If you prefer manual steps:
@@ -339,6 +354,8 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
         - public repos only → PAT optional,
         - private repo read → `repo`,
         - sometimes `read:org` as org policy requires.
+    - The `OctoRepository` check confirms the token is valid and the owner is visible; access to each repository shows up in the `OctoVault` that fetches from it. A classic PAT whose scopes are listed but do not include `repo` is reported with reason `AccessibleLimitedToPublic` and a Warning event, since it can only read public repositories. Fine-grained PATs and GitHub App tokens are never flagged (they have no scopes), and neither is a classic PAT with no scopes at all, because GitHub's response for it looks the same. The result is cached with the access check for `GIT_CRED_TTL` (10m by default), so after adding the `repo` scope to the same token the warning clears within that period; putting a new token in the Secret is re-checked immediately if the Secret carries the `octovault.it/repository: "true"` label (otherwise at the next `GIT_CRED_TTL` recheck).
+    - The token is read from the Secret's `data.password` only (annotations are not accepted).
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
 - **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
 - Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the

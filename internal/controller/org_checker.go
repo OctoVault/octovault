@@ -1,7 +1,11 @@
 package controller
 
-import "context"
+import (
+	"context"
+
+	ghclient "github.com/octovault/octovault/internal/github"
+)
 
 type OrgAccessChecker interface {
-	Check(ctx context.Context, org, pwd string) error
+	CheckAccess(ctx context.Context, org, pwd string) (ghclient.AccessResult, error)
 }
