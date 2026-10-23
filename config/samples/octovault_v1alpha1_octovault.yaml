@@ -1,9 +1,14 @@
-apiVersion: octovault.octovault.it/v1alpha1
+apiVersion: octovault.it/v1alpha1
 kind: OctoVault
 metadata:
   labels:
     app.kubernetes.io/name: octovault
     app.kubernetes.io/managed-by: kustomize
   name: octovault-sample
+  namespace: devops
 spec:
-  # TODO(user): Add fields here
+  octoRepositoryRef:
+    name: octorepository-sample
+  repository: octovault/octovault   # owner must match the OctoRepository organization
+  path: test/resources/config-values.yaml
+  targetName: octovault-sample

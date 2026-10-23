@@ -73,9 +73,12 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 
 	now := time.Now()
 
+	// 복호화 여부에 따라 응답 값이 달라지므로(SecureString 은 암호문/평문) 캐시 키에 포함한다.
+	key := cacheKey(name, withDecryption)
+
 	// 캐시 조회
 	p.mu.RLock()
-	if ent, ok := p.cache[name]; ok && ent.exp.After(now) {
+	if ent, ok := p.cache[key]; ok && ent.exp.After(now) {
 
 		p.mu.RUnlock()
 
@@ -122,10 +125,14 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 
 	// 캐시 저장
 	p.mu.Lock()
-	p.cache[name] = cacheEntry{value: val, meta: meta, exp: now.Add(p.ttl)}
+	p.cache[key] = cacheEntry{value: val, meta: meta, exp: now.Add(p.ttl)}
 	p.mu.Unlock()
 
 	return val, meta, nil
+}
+
+func cacheKey(name string, withDecryption bool) string {
+	return fmt.Sprintf("%s\x00%t", name, withDecryption)
 }
 
 func (p *Provider) ExtractJSONKey(value []byte, jsonKey string) ([]byte, error) {

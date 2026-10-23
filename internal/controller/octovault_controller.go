@@ -123,6 +123,10 @@ type valuesDoc struct {
 			Type    string `yaml:"type,omitempty"`    // "Text" | "AwsSecretManager"
 			Name    string `yaml:"name,omitempty"`    // SecretManager일 때 참조
 			JSONKey string `yaml:"jsonKey,omitempty"` // SecretManager의 SecretString(JSON) 키
+
+			// WithDecryption AwsParameterStore 의 복호화 여부. 생략하면 true 로 본다
+			// (이전 버전은 항상 복호화했으므로 기존 values.yaml 의 동작을 바꾸지 않는다).
+			WithDecryption *bool `yaml:"withDecryption,omitempty"`
 		} `yaml:"data"`
 	} `yaml:"spec"`
 }
@@ -337,6 +341,16 @@ func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaul
 		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
 	}
 
+	// "owner/repo" 의 owner 가 OctoRepository 의 조직과 다르면 조용히 다른 조직에서 받아오게 된다.
+	// 사용자가 적은 저장소와 실제로 읽는 저장소가 같아야 한다. 자격증명을 읽기 전에 거른다.
+	if owner, ok := repositoryOwner(ov.Spec.Repository); ok && !strings.EqualFold(owner, strings.TrimPrefix(strings.TrimSpace(orepo.Spec.Organization), "github.com/")) {
+
+		r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "RepositoryOwnerMismatch",
+			fmt.Sprintf("repository owner %q does not match OctoRepository organization %q", owner, orepo.Spec.Organization)))
+
+		return nil, "", ctrl.Result{RequeueAfter: poll}, nil
+	}
+
 	var cred corev1.Secret
 	secKey := types.NamespacedName{Namespace: orepo.Spec.CredentialsRef.Namespace, Name: orepo.Spec.CredentialsRef.Name}
 
@@ -380,6 +394,7 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 	logger := logf.FromContext(ctx)
 
 	org := orepo.Spec.Organization
+
 	ref := strings.TrimSpace(ov.Spec.GitRef)
 	repo := normalizeRepoName(ov.Spec.Repository)
 	// ctx context.Context, org, repo, path, ref, token string
@@ -555,8 +570,8 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 					return "", ctrl.Result{RequeueAfter: poll}, nil
 				}
-				// SecureString 가능성이 있으므로 복호화 활성화
-				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, true)
+				withDecryption := it.WithDecryption == nil || *it.WithDecryption
+				pv, _, err2 := r.AwsPS.GetParameter(ctx, paramName, withDecryption)
 				if err2 != nil {
 
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceFetchFailed",
@@ -638,9 +653,13 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next.ResolvedType = resolvedType
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
-	r.updateStatusIfChanged(ctx, ov, next)
-	r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
-		"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
+	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
+	// 의미 없는 이벤트가 쌓인다.
+	if r.updateStatusIfChanged(ctx, ov, next) {
+
+		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
+			"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
+	}
 }
 
 func (r *OctoVaultReconciler) fetch(ctx context.Context, org, repo, path, ref, token string) ([]byte, []byte, string, error) {
@@ -900,18 +919,23 @@ func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1
 	return firstErr
 }
 
-func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *octovaultv1alpha1.OctoVault, desired octovaultv1alpha1.OctoVaultStatus) {
+// updateStatusIfChanged 상태가 바뀌어 기록에 성공했으면 true 를 반환한다.
+func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *octovaultv1alpha1.OctoVault, desired octovaultv1alpha1.OctoVaultStatus) bool {
+
 	prev := ov.Status
 	if statusEqualOV(prev, desired) {
 
-		return
+		return false
 	}
 
 	ov.Status = desired
 	if err := r.Status().Update(ctx, ov); err != nil {
 
 		logf.FromContext(ctx).Error(err, "status update failed")
+		return false
 	}
+
+	return true
 }
 
 // fail 직전 상태를 바탕으로 실패 상태를 만든다.
@@ -1017,6 +1041,18 @@ func namespaceAllowed(orepo *octovaultv1alpha1.OctoRepository, ns string) bool {
 	}
 
 	return slices.Contains(orepo.Spec.AllowedNamespaces, ns)
+}
+
+// repositoryOwner "owner/repo" 에서 owner 를 꺼낸다. owner 가 없으면 false.
+func repositoryOwner(repository string) (string, bool) {
+
+	owner, _, found := strings.Cut(strings.TrimSpace(repository), "/")
+	if !found || owner == "" {
+
+		return "", false
+	}
+
+	return owner, true
 }
 
 func normalizeRepoName(s string) string {

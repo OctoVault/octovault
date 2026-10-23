@@ -109,6 +109,38 @@ func TestProvider_GetParameter_Success_AndCache(t *testing.T) {
 	require.Equal(t, 1, callCount)
 }
 
+func TestProvider_GetParameter_CacheIsPerDecryptionMode(t *testing.T) {
+	// 같은 이름이라도 복호화 여부가 다르면 다른 값이므로 캐시를 공유하면 안 된다.
+	var seen []any
+	handler := rtFunc(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("X-Amz-Target") == ssmTargetGetParameter {
+			m := readJSONBody(t, r)
+			seen = append(seen, m["WithDecryption"])
+
+			value := "ciphertext"
+			if m["WithDecryption"] == true {
+				value = "plaintext"
+			}
+
+			return jsonResp(200, map[string]any{
+				"Parameter": map[string]any{"Name": "/my/param", "Type": "SecureString", "Value": value, "Version": 1},
+			}, nil), nil
+		}
+		return jsonResp(404, nil, nil), nil
+	})
+
+	p := newProviderWithHTTP(t, handler, 5*time.Minute)
+
+	dec, _, err := p.GetParameter(context.Background(), "/my/param", true)
+	require.NoError(t, err)
+	enc, _, err := p.GetParameter(context.Background(), "/my/param", false)
+	require.NoError(t, err)
+
+	require.Equal(t, []byte("plaintext"), dec)
+	require.Equal(t, []byte("ciphertext"), enc)
+	require.Equal(t, []any{true, false}, seen)
+}
+
 func TestProvider_GetParameter_NotFound(t *testing.T) {
 	handler := rtFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("X-Amz-Target") == ssmTargetGetParameter {
