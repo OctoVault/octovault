@@ -313,3 +313,117 @@ func TestFetcher_fetchContentBase64_UnsupportedEncoding(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported encoding")
 }
+
+// 1MB 를 넘는 파일은 내용 없이 encoding "none" 으로 온다. 원인을 알 수 있는 에러여야 한다.
+func TestFetcher_fetchContentBase64_TooLarge(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
+	f := NewFetcher(Options{HTTPClient: client})
+
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		return jsonResp(http.StatusOK, contentResp{
+			Encoding: "none",
+			Content:  "",
+			Size:     2 << 20,
+			SHA:      "x",
+		}), nil
+	}
+
+	_, _, err := f.fetchContentBase64(ctx, contentRequest{
+		url:   "https://api.github.com/whatever",
+		token: "tok",
+		kind:  "contents",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "file is 2097152 bytes")
+	require.Contains(t, err.Error(), "1MB")
+}
+
+// 파일이 아닌 경로는 1MB 메시지가 아니라 실제 원인을 알려야 한다.
+func TestFetcher_fetchContentBase64_NotAFile(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: stub}
+	f := NewFetcher(Options{HTTPClient: client})
+
+	for _, tc := range []struct {
+		name string
+		resp any
+		want string
+	}{
+		{name: "symlink", resp: contentResp{Type: "symlink", Size: 23, SHA: "x"}, want: "path is a symlink"},
+		{name: "submodule", resp: contentResp{Type: "submodule", SHA: "x"}, want: "path is a submodule"},
+		{name: "directory", resp: []contentResp{{Type: "file", Name: "a.yaml"}}, want: "path is a directory"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub.handler = func(r *http.Request) (*http.Response, error) {
+				return jsonResp(http.StatusOK, tc.resp), nil
+			}
+
+			_, _, err := f.fetchContentBase64(ctx, contentRequest{url: "https://api.github.com/" + tc.name, token: "tok", kind: "contents"})
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+// 기본 미디어 타입에서 1MB 를 넘는 파일은 403 too_large 로 온다. 권한 오류로 보고하면 안 된다.
+func TestFetcher_Fetch_TooLargeForbiddenIsNotAPermissionError(t *testing.T) {
+	ctx := context.Background()
+
+	stub := &stubRT{t: t}
+	f := NewFetcher(Options{HTTPClient: &http.Client{Timeout: 5 * time.Second, Transport: stub}})
+
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		resp := jsonResp(http.StatusForbidden, map[string]any{
+			"message": "This API returns blobs up to 1 MB in size. The requested blob is too large to fetch via the API, but you can use the Git Data API to request blobs up to 100 MB in size.",
+			"errors":  []map[string]string{{"resource": "Blob", "field": "data", "code": "too_large"}},
+		})
+		resp.Header.Set("X-RateLimit-Remaining", "4999")
+
+		return resp, nil
+	}
+
+	_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "big.yaml", "", "tok")
+	require.ErrorContains(t, err, "larger than 1MB")
+	require.NotContains(t, err.Error(), "lacks access")
+}
+
+// 스키마 파일이 없으면 무시하지만, 그 밖의 이유로 받지 못하면 조용히 검증을 끄지 않고 실패한다.
+func TestFetcher_Fetch_SchemaErrors(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name    string
+		schema  *http.Response
+		wantErr string
+	}{
+		{name: "missing schema is ignored", schema: jsonResp(http.StatusNotFound, nil)},
+		{name: "oversized schema fails", schema: jsonResp(http.StatusOK, contentResp{Encoding: "none", Size: 2 << 20}), wantErr: "fetch schema file"},
+		{name: "symlink schema fails", schema: jsonResp(http.StatusOK, contentResp{Type: "symlink"}), wantErr: "path is a symlink"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &stubRT{t: t}
+			stub.handler = func(r *http.Request) (*http.Response, error) {
+				if strings.HasSuffix(r.URL.Path, "/schema.json") {
+
+					return tc.schema, nil
+				}
+
+				return jsonResp(http.StatusOK, contentResp{Encoding: "base64", Content: b64WithNewline("a: b"), SHA: "sha"}), nil
+			}
+
+			f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, SchemaFileName: "schema.json"})
+			_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "app/values.yaml", "", "tok")
+			if tc.wantErr == "" {
+
+				require.NoError(t, err)
+				return
+			}
+
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}

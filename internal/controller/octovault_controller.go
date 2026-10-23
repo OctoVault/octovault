@@ -66,6 +66,51 @@ import (
 // 28개면 고갈시켰다. ETag 조건부 요청과 함께 쓰면 실제 소모는 이보다 훨씬 낮다.
 const DefaultPollInterval = 5 * time.Minute
 
+// MinPollInterval spec.pollInterval 의 하한. 이보다 짧은 값은 이 값으로 올린다.
+// 한 PAT 를 여러 OctoVault 가 나눠 쓰므로 짧은 주기 하나가 전체 한도를 잠식할 수 있다.
+const MinPollInterval = 30 * time.Second
+
+// warnUnparsablePollInterval CRD 패턴은 통과했지만 Go duration 범위를 넘는 값(예: 9999999999h)은
+// 기본값으로 쓰되 조용히 넘기지 않는다. 같은 OctoVault 의 같은 값은 한 번만 로그로 남긴다.
+// 값이 정상으로 돌아오면(그리고 삭제될 때) 기록을 지워, 기록이 계속 쌓이지 않게 한다.
+func (r *OctoVaultReconciler) warnUnparsablePollInterval(ctx context.Context, ov *octovaultv1alpha1.OctoVault) {
+
+	uid := string(ov.UID)
+	v := strings.TrimSpace(ov.Spec.PollInterval)
+	_, err := time.ParseDuration(v)
+	if v == "" || err == nil {
+
+		r.pollWarned.Delete(uid)
+		return
+	}
+
+	if prev, seen := r.pollWarned.Swap(uid, v); seen && prev == v {
+
+		return
+	}
+
+	logf.FromContext(ctx).Info("spec.pollInterval cannot be parsed; using the default",
+		"pollInterval", v, "default", DefaultPollInterval, "error", err.Error())
+	r.Recorder.Eventf(ov, corev1.EventTypeWarning, "InvalidPollInterval",
+		"spec.pollInterval %q cannot be used (%v); polling every %s instead", v, err, DefaultPollInterval)
+}
+
+// pollIntervalOf spec.pollInterval 을 해석한다. 비었거나, 0 이거나, 해석할 수 없으면 기본값을 쓴다.
+// 0 보다 크고 하한보다 짧으면 하한을 쓴다.
+//
+// 0 을 기본값으로 보는 것은 예전 동작 그대로다. 하한으로 올리면 0m 을 쓰던 OctoVault 가 업그레이드 후
+// 5m 대신 30s 마다 polling 해 호출이 10배가 된다.
+func pollIntervalOf(ov *octovaultv1alpha1.OctoVault) time.Duration {
+
+	v, err := time.ParseDuration(strings.TrimSpace(ov.Spec.PollInterval))
+	if err != nil || v == 0 {
+
+		return DefaultPollInterval
+	}
+
+	return max(v, MinPollInterval)
+}
+
 const (
 	CondReady = "Ready"
 
@@ -179,6 +224,9 @@ type OctoVaultReconciler struct {
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 
+	// pollWarned UID → 이미 로그로 남긴 해석할 수 없는 pollInterval 값.
+	pollWarned sync.Map
+
 	// TargetSecrets OctoVault 가 만든 Secret 만 담는 메타데이터 캐시(managed-by 라벨로 제한).
 	// 기본 Secret 캐시는 자격증명 Secret 만 담으므로 대상 Secret 변경은 여기서 받는다.
 	// nil 이면 대상 Secret 을 watch 하지 않고 poll 주기에만 맞춘다.
@@ -239,6 +287,8 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 		// UID 별로 남겨 둔 기록을 지워, 지워진 OctoVault 의 항목이 메모리에 쌓이지 않게 한다.
 		r.reservedWarned.Delete(string(ov.UID))
 
+		r.pollWarned.Delete(string(ov.UID))
+
 		return ctrl.Result{}, nil
 	}
 
@@ -255,7 +305,8 @@ func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (
 
 	r.ensurePendingInit(ctx, &ov)
 
-	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := pollIntervalOf(&ov)
+	r.warnUnparsablePollInterval(ctx, &ov)
 
 	// 아래 헬퍼들은 res 와 err 중 하나만 채워 반환한다.
 	// 둘을 함께 반환하면 controller-runtime 이 res 를 버리고 5ms 부터 시작하는
@@ -358,7 +409,7 @@ func (r *OctoVaultReconciler) ensurePendingInit(ctx context.Context, ov *octovau
 
 func (r *OctoVaultReconciler) loadRepoAndToken(ctx context.Context, ov *octovaultv1alpha1.OctoVault) (*octovaultv1alpha1.OctoRepository, string, ctrl.Result, error) {
 
-	poll := parseDurationOr(ov.Spec.PollInterval, DefaultPollInterval)
+	poll := pollIntervalOf(ov)
 	var orepo octovaultv1alpha1.OctoRepository
 
 	if err := r.Get(ctx, types.NamespacedName{Name: ov.Spec.OctoRepositoryRef.Name}, &orepo); err != nil {
@@ -1127,7 +1178,10 @@ func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 	return readyConditionEqual(a.Conditions, b.Conditions)
 }
 
-func parseDurationOr(s string, d time.Duration) time.Duration {
+// ParseDurationOr 비었거나, 파싱에 실패하거나, 0 이하면 기본값을 쓴다.
+func ParseDurationOr(s string, d time.Duration) time.Duration {
+
+	s = strings.TrimSpace(s)
 	if s == "" {
 
 		return d

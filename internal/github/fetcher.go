@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -23,6 +24,9 @@ import (
 // 바디를 끝까지 읽지 않으면 Go transport 가 커넥션을 재사용하지 않으므로
 // 오류 경로에서도 반드시 드레인해야 한다.
 const maxErrorBodyBytes = 4 << 10
+
+// errNotFound 요청한 경로가 저장소에 없다(404).
+var errNotFound = errors.New("404 not found")
 
 type Options struct {
 	BaseURL    string       // e.g. "https://api.github.com"
@@ -159,9 +163,14 @@ func (f *Fetcher) Fetch(ctx context.Context, org, repo, filePath, ref, token str
 		schemaPath := path.Join(dirOf(fp), f.schemaFileName)
 		schemaURL := f.contentURL(owner, repoName, schemaPath, refParam)
 
-		if s, _, sErr := f.fetchContentBase64(ctx, contentRequest{url: schemaURL, token: token, kind: "schema"}); sErr == nil {
-
+		// 스키마 파일이 없으면(404) 검증 없이 진행한다. 그 밖의 오류(1MB 초과, symlink, 권한, rate limit)를
+		// 무시하면 검증이 아무 표시 없이 꺼지므로 동기화를 실패시킨다.
+		s, _, sErr := f.fetchContentBase64(ctx, contentRequest{url: schemaURL, token: token, kind: "schema"})
+		switch {
+		case sErr == nil:
 			schema = s
+		case !errors.Is(sErr, errNotFound):
+			return nil, nil, "", fmt.Errorf("fetch schema file %s failed: %w", schemaPath, sErr)
 		}
 	}
 
@@ -210,10 +219,30 @@ func (f *Fetcher) fetchContentBase64(ctx context.Context, cr contentRequest) ([]
 		return nil, "", err
 	}
 
+	// 디렉터리 경로면 contents API 는 항목 배열을 돌려준다.
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+
+		return nil, "", errors.New("path is a directory, not a file")
+	}
+
 	var c contentResp
 	if err := json.Unmarshal(body, &c); err != nil {
 
 		return nil, "", err
+	}
+
+	// 저장소 밖을 가리키는 symlink, submodule 등은 type 이 file 이 아니고 내용도 없다.
+	// 아래 1MB 판정보다 먼저 걸러야 원인과 다른 메시지가 나가지 않는다.
+	if c.Type != "" && c.Type != "file" {
+
+		return nil, "", fmt.Errorf("path is a %s, not a file", c.Type)
+	}
+
+	// 1MB 를 넘는 파일은 contents API 가 내용 없이 encoding "none" 으로 돌려준다.
+	// ConfigMap/Secret 자체가 1MiB 를 넘을 수 없으므로 다른 API 로 받아올 이유가 없다.
+	if strings.EqualFold(strings.TrimSpace(c.Encoding), "none") || (c.Content == "" && c.Size > 0) {
+
+		return nil, "", fmt.Errorf("file is %d bytes: GitHub's contents API does not return files over 1MB inline, and a ConfigMap or Secret cannot exceed 1MiB", c.Size)
 	}
 
 	if strings.ToLower(strings.TrimSpace(c.Encoding)) != "base64" {
@@ -344,7 +373,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 		return nil, errors.New("304 not modified but no cached body available")
 
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("404 not found: %s", cr.url)
+		return nil, fmt.Errorf("%w: %s", errNotFound, cr.url)
 
 	case http.StatusUnauthorized:
 		return nil, errors.New("401 unauthorized")
@@ -366,6 +395,13 @@ func (f *Fetcher) limitOrPermissionError(cr contentRequest, resp *http.Response)
 
 		f.rememberLimit(cr.token, rle)
 		return rle
+	}
+
+	// 기본 미디어 타입으로 1MB 를 넘는 파일을 요청하면 GitHub 는 403 과 함께 code "too_large" 를 돌려준다.
+	// 권한 문제로 보고하면 원인을 찾기 어렵다.
+	if resp.StatusCode == http.StatusForbidden && bytes.Contains(peek, []byte("too_large")) {
+
+		return errors.New("file is larger than 1MB: GitHub's contents API does not return it inline, and a ConfigMap or Secret cannot exceed 1MiB")
 	}
 
 	if resp.StatusCode == http.StatusForbidden {
