@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	ovmetrics "github.com/octovault/octovault/internal/metrics"
@@ -58,6 +61,13 @@ type Fetcher struct {
 	conditional        bool
 	cache              *lru[etagEntry]
 	now                func() time.Time
+
+	// limited 토큰 지문 → rate limit 이 풀리는 시각까지의 마지막 거절.
+	// 그 전에는 GitHub 를 다시 부르지 않는다. 대상 변경 이벤트나 status 기록 재시도처럼
+	// poll 주기와 무관하게 reconcile 이 돌아도 한도가 풀리기 전에는 요청이 나가지 않는다.
+	limitedMu sync.Mutex
+	limited   map[string]*RateLimitError
+	limitedAt map[string]time.Time
 }
 
 // etagEntry 조건부 요청에 필요한 ETag 와, 304 응답 시 되돌려줄 원본 바디.
@@ -105,6 +115,8 @@ func NewFetcher(opts Options) *Fetcher {
 		conditional:        !opts.DisableConditionalRequests,
 		cache:              newLRU[etagEntry](opts.CacheEntries),
 		now:                nowFn,
+		limited:            map[string]*RateLimitError{},
+		limitedAt:          map[string]time.Time{},
 	}
 }
 
@@ -267,6 +279,11 @@ func (f *Fetcher) fetchLatestCommitSHA(ctx context.Context, cr commitRequest) (s
 // 200 이면 바디를 ETag 와 함께 캐시하고, 304 면 캐시된 바디를 되돌려준다.
 func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error) {
 
+	if rle := f.stillLimited(cr.token); rle != nil {
+
+		return nil, rle
+	}
+
 	key := credentialScopedKey(cr.url, cr.token)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cr.url, nil)
@@ -333,7 +350,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 		return nil, errors.New("401 unauthorized")
 
 	case http.StatusForbidden, http.StatusTooManyRequests:
-		return nil, f.limitOrPermissionError(cr.kind, resp)
+		return nil, f.limitOrPermissionError(cr, resp)
 
 	default:
 		return nil, fmt.Errorf("%d unexpected", resp.StatusCode)
@@ -341,12 +358,13 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 }
 
 // limitOrPermissionError 403/429 를 rate limit 과 권한 오류로 구분해 반환한다.
-func (f *Fetcher) limitOrPermissionError(kind string, resp *http.Response) error {
+func (f *Fetcher) limitOrPermissionError(cr contentRequest, resp *http.Response) error {
 
 	peek, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 
-	if rle, limited := rateLimitErrorFrom(kind, resp, peek, f.now()); limited {
+	if rle, limited := rateLimitErrorFrom(cr.kind, resp, peek, f.now()); limited {
 
+		f.rememberLimit(cr.token, rle)
 		return rle
 	}
 
@@ -415,4 +433,64 @@ type contentResp struct {
 
 type commitResp struct {
 	SHA string `json:"sha"`
+}
+
+// rememberLimit 이 토큰은 RetryAfter 가 지날 때까지 다시 부르지 않는다.
+func (f *Fetcher) rememberLimit(token string, rle *RateLimitError) {
+
+	cred := limitKey(token)
+	now := f.now()
+
+	f.limitedMu.Lock()
+	defer f.limitedMu.Unlock()
+
+	// 다시 쓰이지 않는 토큰의 기록이 쌓이지 않도록, 새로 넣을 때 이미 풀린 기록을 지운다.
+	for k, until := range f.limitedAt {
+		if !until.After(now) {
+
+			delete(f.limited, k)
+			delete(f.limitedAt, k)
+		}
+	}
+
+	f.limited[cred] = rle
+	f.limitedAt[cred] = now.Add(rle.RetryAfter)
+}
+
+// limitKey rate limit 기억의 키. 메트릭 라벨용 지문(credentialLabel, 32비트)은 짧아서 두 토큰이 겹치면
+// 다른 토큰까지 막히므로, 전체 해시를 쓴다. 토큰 원문은 남기지 않는다.
+func limitKey(token string) string {
+
+	sum := sha256.Sum256([]byte(token))
+
+	return hex.EncodeToString(sum[:])
+}
+
+// stillLimited 이 토큰이 아직 rate limit 에 걸려 있으면, 요청을 보내지 않고 돌려줄 에러.
+// 남은 시간을 RetryAfter 로 다시 계산한다. 풀렸으면 기록을 지우고 nil.
+func (f *Fetcher) stillLimited(token string) *RateLimitError {
+
+	cred := limitKey(token)
+
+	f.limitedMu.Lock()
+	defer f.limitedMu.Unlock()
+
+	until, ok := f.limitedAt[cred]
+	if !ok {
+
+		return nil
+	}
+
+	remaining := until.Sub(f.now())
+	if remaining <= 0 {
+
+		delete(f.limited, cred)
+		delete(f.limitedAt, cred)
+		return nil
+	}
+
+	cached := *f.limited[cred]
+	cached.RetryAfter = clampBackoff(remaining)
+
+	return &cached
 }

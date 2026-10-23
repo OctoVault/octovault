@@ -47,6 +47,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -167,6 +168,9 @@ type OctoVaultReconciler struct {
 	AwsSM AwsSecretsProvider
 	AwsPS AwsParamProvider
 
+	// statusBackoff conflict 가 아닌 status 기록 실패가 이어질 때 재시도 간격을 늘린다.
+	statusBackoff statusBackoff
+
 	// reservedWarned UID → 이미 알린, values.yaml 에서 무시한 octovault.it 키 목록.
 	reservedWarned sync.Map
 
@@ -185,6 +189,14 @@ type OctoVaultReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
+	// status 기록이 실패하면 poll 주기(기본 5분)까지 기다리지 않고 곧 다시 본다(statusWrites).
+	ctx, writes := trackStatusWrites(ctx, &r.statusBackoff, req.String())
+
+	return writes.apply(r.reconcile(ctx, req))
+}
+
+func (r *OctoVaultReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	logger := logf.FromContext(ctx)
 
@@ -262,20 +274,23 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return res, nil
 	}
 
+	// revision 은 라벨 값으로도 쓰이므로 라벨에 허용되지 않는 ':' 를 쓰지 않는다.
 	if rev == "" {
-		rev = "sha256:" + shortSHA(valuesYAML)
+		rev = "sha256-" + shortSHA(valuesYAML)
 	}
 
-	if res := r.tryValidate(&ov, valuesYAML, schemaJSON, poll); res.RequeueAfter > 0 {
+	if f := r.validate(valuesYAML, schemaJSON); f != nil {
 
-		return res, nil
+		r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, f.reason, f.msg))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	// 3) parse values.yaml
-	doc, resolvedType, res := r.parseAndResolveType(&ov, valuesYAML, poll)
-	if res.RequeueAfter > 0 {
+	doc, resolvedType, f := parseValues(valuesYAML)
+	if f != nil {
 
-		return res, nil
+		r.updateStatusIfChanged(ctx, &ov, fail(ov.Status, f.reason, f.msg))
+		return ctrl.Result{RequeueAfter: poll}, nil
 	}
 
 	r.warnReservedKeys(ctx, &ov, doc)
@@ -292,7 +307,7 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 4) apply
-	appliedHash, res, err := r.applyOutput(ctx, &ov, doc, poll, resolvedType, rev, targetNS)
+	applied, res, err := r.applyOutput(ctx, &ov, doc, poll, resolvedType, rev, targetNS)
 	if err != nil {
 
 		logger.Error(err, "failed to apply output")
@@ -305,7 +320,7 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// 5) status
-	r.setSyncedStatus(ctx, &ov, appliedHash, resolvedType, rev)
+	r.setSyncedStatus(ctx, &ov, applied)
 
 	return ctrl.Result{RequeueAfter: poll}, nil
 }
@@ -424,42 +439,55 @@ func (r *OctoVaultReconciler) tryFetch(ctx context.Context, ov *octovaultv1alpha
 	return valuesYAML, schemaJSON, rev, ctrl.Result{}
 }
 
-func (r *OctoVaultReconciler) tryValidate(ov *octovaultv1alpha1.OctoVault, valuesYAML, schemaJSON []byte, poll time.Duration) ctrl.Result {
-	if r.Validator != nil {
-		if err := r.Validator.Validate(valuesYAML, schemaJSON); err != nil {
-
-			r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ValidateFailed", fmt.Sprintf("failed to validate values: %v", err)))
-
-			return ctrl.Result{RequeueAfter: poll}
-		}
-	}
-
-	return ctrl.Result{}
+// syncFailure 상태에 기록할 실패. 호출자가 reconcile 의 ctx 로 기록한다.
+type syncFailure struct {
+	reason string
+	msg    string
 }
 
-func (r *OctoVaultReconciler) parseAndResolveType(ov *octovaultv1alpha1.OctoVault, valuesYAML []byte, poll time.Duration) (valuesDoc, string, ctrl.Result) {
+func (r *OctoVaultReconciler) validate(valuesYAML, schemaJSON []byte) *syncFailure {
+	if r.Validator == nil {
+
+		return nil
+	}
+
+	if err := r.Validator.Validate(valuesYAML, schemaJSON); err != nil {
+
+		return &syncFailure{reason: "ValidateFailed", msg: fmt.Sprintf("failed to validate values: %v", err)}
+	}
+
+	return nil
+}
+
+func parseValues(valuesYAML []byte) (valuesDoc, string, *syncFailure) {
 
 	var doc valuesDoc
 	if err := yaml.Unmarshal(valuesYAML, &doc); err != nil {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "ParseFailed", fmt.Sprintf("yaml parse failed: %v", err)))
-
-		return doc, "", ctrl.Result{RequeueAfter: poll}
+		return doc, "", &syncFailure{reason: "ParseFailed", msg: fmt.Sprintf("yaml parse failed: %v", err)}
 	}
 
 	resolvedType := strings.TrimSpace(doc.Metadata.Type)
-	if resolvedType == "" || (resolvedType != string(octovaultv1alpha1.OutputConfigMap) && resolvedType != string(octovaultv1alpha1.OutputSecret)) {
+	if resolvedType != string(octovaultv1alpha1.OutputConfigMap) && resolvedType != string(octovaultv1alpha1.OutputSecret) {
 
-		r.updateStatusIfChanged(context.Background(), ov, fail(ov.Status, "InvalidType", "metadata.type must be 'ConfigMap' or 'Secret'"))
-
-		return doc, "", ctrl.Result{RequeueAfter: poll}
+		return doc, "", &syncFailure{reason: "InvalidType", msg: "metadata.type must be 'ConfigMap' or 'Secret'"}
 	}
 
-	return doc, resolvedType, ctrl.Result{}
+	return doc, resolvedType, nil
 }
 
-func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1alpha1.OctoVault, doc valuesDoc, poll time.Duration, resolvedType, rev, targetNS string) (string, ctrl.Result, error) {
+// appliedOutput 대상에 적용한 결과. 상태에는 setSyncedStatus 가 한 번에 기록한다.
+type appliedOutput struct {
+	resolvedType string
+	rev          string
+	hash         string
+	extRefs      []octovaultv1alpha1.ExternalRefStatus
+}
+
+func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1alpha1.OctoVault, doc valuesDoc, poll time.Duration, resolvedType, rev, targetNS string) (appliedOutput, ctrl.Result, error) {
+
 	var appliedHash string
+	var extRefs []octovaultv1alpha1.ExternalRefStatus
 	switch resolvedType {
 	case string(octovaultv1alpha1.OutputConfigMap):
 		data := make(map[string]string, len(doc.Spec.Data))
@@ -469,7 +497,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if k == "" {
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData", "data.key must be non-empty"))
-				return "", ctrl.Result{RequeueAfter: poll}, nil
+				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 			data[k] = it.Value
 		}
@@ -481,16 +509,15 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if errors.Is(err, errTargetNotOwned) {
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
-				return "", ctrl.Result{RequeueAfter: poll}, nil
+				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
-			return "", ctrl.Result{}, err
+			return appliedOutput{}, ctrl.Result{}, err
 		}
 
 	case string(octovaultv1alpha1.OutputSecret):
 		bytes := make(map[string][]byte, len(doc.Spec.Data))
-		var extRefs []octovaultv1alpha1.ExternalRefStatus
 
 		for _, it := range doc.Spec.Data {
 
@@ -498,7 +525,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if k == "" {
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData", "data.key must be non-empty"))
-				return "", ctrl.Result{RequeueAfter: poll}, nil
+				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 			switch strings.ToLower(strings.TrimSpace(it.Type)) {
 			case "", "text":
@@ -509,7 +536,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AwsNotConfigured", "AwsSecretManager type requires controller to be configured with AWS provider"))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				name := strings.TrimSpace(it.Name)
@@ -518,7 +545,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData",
 						fmt.Sprintf("Secret data item %q missing 'name' for AwsSecretManager", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				val, meta, err2 := r.AwsSM.GetSecret(ctx, name)
@@ -530,7 +557,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AwsSecretFetchFailed",
 						fmt.Sprintf("failed to fetch from AWS secret manager %q: %v", name, err2)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 
 				if jk := strings.TrimSpace(it.JSONKey); jk != "" {
@@ -541,17 +568,18 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 						r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "AWSSecretJSONKeyError",
 							fmt.Sprintf("aws secret %q jsonKey=%q: %v", name, jk, err)))
 
-						return "", ctrl.Result{RequeueAfter: poll}, nil
+						return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 					}
 				}
 
 				bytes[k] = val
 
 				extRefs = append(extRefs, octovaultv1alpha1.ExternalRefStatus{
-					Provider:      "AwsSecretsManager",
-					Name:          name,
-					VersionID:     meta.VersionID,
-					VersionStages: meta.VersionStages,
+					Provider:  "AwsSecretsManager",
+					Name:      name,
+					VersionID: meta.VersionID,
+					// 순서가 바뀌어도 같은 상태로 보도록 정렬한다(AWS 가 순서를 보장하지 않는다).
+					VersionStages: sortedCopy(meta.VersionStages),
 					Key:           k,
 				})
 
@@ -561,7 +589,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceUnavailable",
 						fmt.Sprintf("AwsParameterStore provider unavailable for %q", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 				paramName := strings.TrimSpace(it.Name)
 				if paramName == "" {
@@ -569,7 +597,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "InvalidData",
 						fmt.Sprintf("Secret data item %q requires .name for AwsParameterStore", k)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 				withDecryption := it.WithDecryption == nil || *it.WithDecryption
 				pv, psMeta, err2 := r.AwsPS.GetParameter(ctx, paramName, withDecryption)
@@ -578,7 +606,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 					r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalSourceFetchFailed",
 						fmt.Sprintf("failed to fetch from AWS parameter store %q: %v", paramName, err2)))
 
-					return "", ctrl.Result{RequeueAfter: poll}, nil
+					return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 				}
 				if jk := strings.TrimSpace(it.JSONKey); jk != "" {
 
@@ -589,7 +617,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 						r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ExternalJSONExtractFailed",
 							fmt.Sprintf("aws parameter %q jsonKey=%q: %v", paramName, jk, err)))
 
-						return "", ctrl.Result{RequeueAfter: poll}, nil
+						return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 					}
 
 					pv = out
@@ -609,7 +637,7 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "UnsupportedDataType",
 					fmt.Sprintf("unsupported data.type %q for key %q", it.Type, k)))
 
-				return "", ctrl.Result{RequeueAfter: poll}, nil
+				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 		}
 
@@ -620,30 +648,20 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 			if errors.Is(err, errTargetNotOwned) {
 
 				r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "TargetNotOwned", err.Error()))
-				return "", ctrl.Result{RequeueAfter: poll}, nil
+				return appliedOutput{}, ctrl.Result{RequeueAfter: poll}, nil
 			}
 
 			r.updateStatusIfChanged(ctx, ov, fail(ov.Status, "ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
 
-			return "", ctrl.Result{}, err
-		}
-
-		// AWS SM 등 외부 참조에 대한 요약 상태 업데이트
-		if len(extRefs) > 0 {
-
-			ov.Status.ExternalRefs = extRefs
-			ov.Status.ExternalRefsSummary = summarizeExtRefs(extRefs)
-		} else {
-
-			ov.Status.ExternalRefs = nil
-			ov.Status.ExternalRefsSummary = ""
+			return appliedOutput{}, ctrl.Result{}, err
 		}
 	}
 
-	return appliedHash, ctrl.Result{}, nil
+	return appliedOutput{resolvedType: resolvedType, rev: rev, hash: appliedHash, extRefs: extRefs}, ctrl.Result{}, nil
 }
-func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovaultv1alpha1.OctoVault, appliedHash, resolvedType, rev string) {
+
+func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovaultv1alpha1.OctoVault, out appliedOutput) {
 
 	targetNS := ov.Spec.TargetNamespace
 	if targetNS == "" {
@@ -655,11 +673,13 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	next := ov.Status
 	next.Phase = octovaultv1alpha1.OVPhaseSynced
 	next.Message = ""
-	next.ObservedRevision = rev
+	next.ObservedRevision = out.rev
 	next.ObservedRef = r.effectiveRef(ov)
 	next.LastSyncedTime = &now
-	next.AppliedDataHash = appliedHash
-	next.ResolvedType = resolvedType
+	next.AppliedDataHash = out.hash
+	next.ResolvedType = out.resolvedType
+	next.ExternalRefs = out.extRefs
+	next.ExternalRefsSummary = summarizeExtRefs(out.extRefs)
 	next.Conditions = upsertReadyCondition(next.Conditions, metav1.ConditionTrue, "Synced", "values applied")
 
 	// 이벤트는 상태가 실제로 바뀔 때만 남긴다. 매 폴링마다 남기면 OctoVault 수에 비례해
@@ -667,7 +687,7 @@ func (r *OctoVaultReconciler) setSyncedStatus(ctx context.Context, ov *octovault
 	if r.updateStatusIfChanged(ctx, ov, next) {
 
 		r.Recorder.Eventf(ov, corev1.EventTypeNormal, "Synced",
-			"OctoVault synced: revision=%s, type=%s, target=%s/%s", rev, resolvedType, targetNS, ov.Spec.TargetName)
+			"OctoVault synced: revision=%s, type=%s, target=%s/%s", out.rev, out.resolvedType, targetNS, ov.Spec.TargetName)
 	}
 }
 
@@ -951,6 +971,7 @@ func (r *OctoVaultReconciler) updateStatusIfChanged(ctx context.Context, ov *oct
 	if err := r.Status().Update(ctx, ov); err != nil {
 
 		logf.FromContext(ctx).Error(err, "status update failed")
+		noteStatusWriteError(ctx, err)
 		return false
 	}
 
@@ -974,6 +995,14 @@ func fail(prev octovaultv1alpha1.OctoVaultStatus, reason, msg string) octovaultv
 
 func statusEqualOV(a, b octovaultv1alpha1.OctoVaultStatus) bool {
 	if a.Phase != b.Phase || a.Message != b.Message || a.ObservedRevision != b.ObservedRevision || a.ObservedRef != b.ObservedRef || a.AppliedDataHash != b.AppliedDataHash || a.ResolvedType != b.ResolvedType {
+
+		return false
+	}
+
+	// 외부 시크릿이 회전돼 값은 같고 버전만 바뀐 경우도 상태에 남아야 한다.
+	// Semantic 은 nil 과 빈 슬라이스를 같게 본다. reflect.DeepEqual 로 비교하면 VersionStages 가
+	// nil 로 돌아오는지 [] 로 돌아오는지에 따라 매번 바뀐 것으로 보고 쓰기와 이벤트를 반복할 수 있다.
+	if !equality.Semantic.DeepEqual(a.ExternalRefs, b.ExternalRefs) {
 
 		return false
 	}
@@ -1158,4 +1187,16 @@ func (r *OctoVaultReconciler) maxWorkers() int {
 	}
 
 	return 1
+}
+
+func sortedCopy(in []string) []string {
+	if len(in) == 0 {
+
+		return nil
+	}
+
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+
+	return out
 }

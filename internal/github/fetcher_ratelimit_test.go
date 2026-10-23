@@ -391,3 +391,94 @@ func (l *lockedRT) RoundTrip(r *http.Request) (*http.Response, error) {
 
 	return l.inner.RoundTrip(r)
 }
+
+// rate limit 에 걸린 토큰은 리셋 전까지 GitHub 를 다시 부르지 않는다. 대상 변경 이벤트나 status
+// 기록 재시도로 reconcile 이 poll 주기와 무관하게 돌아도 요청이 나가지 않아야 한다.
+func TestFetcher_DoesNotCallGitHubBeforeRateLimitResets(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	limited := true
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		if limited {
+
+			resp := jsonResp(http.StatusForbidden, map[string]string{"message": "API rate limit exceeded"})
+			resp.Header.Set("X-RateLimit-Remaining", "0")
+			resp.Header.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(60*time.Second).Unix(), 10))
+
+			return resp, nil
+		}
+
+		return jsonResp(http.StatusOK, contentResp{Encoding: "base64", Content: b64WithNewline("a: b"), SHA: "sha"}), nil
+	}
+
+	f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, Now: func() time.Time { return now }})
+
+	_, _, _, err := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	_, isLimited := AsRateLimitError(err)
+	require.True(t, isLimited)
+	require.Len(t, stub.requests, 1)
+
+	now = now.Add(20 * time.Second)
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	rle, isLimited := AsRateLimitError(err)
+	require.True(t, isLimited, "still limited: answered from memory")
+	require.Len(t, stub.requests, 1, "no request may be sent before the reset")
+	require.Equal(t, 40*time.Second, rle.RetryAfter, "RetryAfter is the time left")
+
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "other-token")
+	_, isLimited = AsRateLimitError(err)
+	require.True(t, isLimited)
+	require.Len(t, stub.requests, 2, "other tokens have their own limit")
+
+	limited = false
+	now = now.Add(41 * time.Second)
+	_, _, _, err = f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.NoError(t, err)
+	require.Len(t, stub.requests, 3, "requests resume after the reset")
+}
+
+// rate limit 중 같은 제한에 대한 메시지는 시간이 지나도 같아야 한다(바뀌면 그때마다 status 를 다시 쓴다).
+func TestFetcher_RateLimitMessageIsStableWhileLimited(t *testing.T) {
+	ctx := context.Background()
+
+	now := time.Unix(1_700_000_000, 0)
+	stub := &stubRT{t: t}
+	stub.handler = func(r *http.Request) (*http.Response, error) {
+		resp := jsonResp(http.StatusForbidden, map[string]string{"message": "API rate limit exceeded"})
+		resp.Header.Set("X-RateLimit-Remaining", "0")
+		resp.Header.Set("X-RateLimit-Reset", strconv.FormatInt(now.Add(60*time.Second).Unix(), 10))
+
+		return resp, nil
+	}
+
+	f := NewFetcher(Options{HTTPClient: &http.Client{Transport: stub}, Now: func() time.Time { return now }})
+
+	_, _, _, first := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.Error(t, first)
+
+	now = now.Add(17*time.Second + 123*time.Millisecond)
+	_, _, _, second := f.Fetch(ctx, "github.com/acme", "repo", "values.yaml", "", "tok")
+	require.Error(t, second)
+
+	require.Equal(t, first.Error(), second.Error())
+	require.Contains(t, first.Error(), "retry after 2023-11-14T22:14:20Z")
+}
+
+// 풀린 기록은 새 기록을 넣을 때 정리되어, 다시 쓰이지 않는 토큰의 기록이 쌓이지 않는다.
+func TestFetcher_ExpiredRateLimitEntriesAreSwept(t *testing.T) {
+
+	now := time.Unix(1_700_000_000, 0)
+	f := NewFetcher(Options{Now: func() time.Time { return now }})
+
+	f.rememberLimit("old-token", &RateLimitError{RetryAfter: time.Minute})
+	now = now.Add(2 * time.Minute)
+	f.rememberLimit("new-token", &RateLimitError{RetryAfter: time.Minute})
+
+	f.limitedMu.Lock()
+	defer f.limitedMu.Unlock()
+	require.Len(t, f.limitedAt, 1)
+	_, stillThere := f.limitedAt[limitKey("old-token")]
+	require.False(t, stillThere)
+}

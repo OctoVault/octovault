@@ -49,16 +49,27 @@ type RateLimitError struct {
 	Kind       LimitKind
 	Snapshot   RateLimit
 	RetryAfter time.Duration
+
+	// Until 다시 시도해도 되는 시각. 메시지에는 남은 시간 대신 이 시각을 쓴다. 남은 시간은 부를 때마다
+	// 줄어들어, 같은 제한인데도 status 메시지가 매번 달라지고 그때마다 status 를 다시 쓰게 된다.
+	Until time.Time
 }
 
 func (e *RateLimitError) Error() string {
+
+	retry := e.RetryAfter.Round(time.Second).String()
+	if !e.Until.IsZero() {
+
+		retry = e.Until.UTC().Format(time.RFC3339)
+	}
+
 	if e.Snapshot.Known {
 
 		return fmt.Sprintf("%d %s rate limit exhausted (resource=%s limit=%d remaining=%d); retry after %s",
-			e.StatusCode, e.Kind, e.Snapshot.Resource, e.Snapshot.Limit, e.Snapshot.Remaining, e.RetryAfter)
+			e.StatusCode, e.Kind, e.Snapshot.Resource, e.Snapshot.Limit, e.Snapshot.Remaining, retry)
 	}
 
-	return fmt.Sprintf("%d %s rate limit exhausted; retry after %s", e.StatusCode, e.Kind, e.RetryAfter)
+	return fmt.Sprintf("%d %s rate limit exhausted; retry after %s", e.StatusCode, e.Kind, retry)
 }
 
 // AsRateLimitError 에러 체인에서 RateLimitError 를 꺼낸다.
@@ -225,11 +236,14 @@ func rateLimitErrorFrom(kind string, resp *http.Response, body []byte, now time.
 
 	ovmetrics.RateLimitedTotal.WithLabelValues(kind).Inc()
 
+	retryAfter := retryAfterFrom(resp.Header, snap, now)
+
 	return &RateLimitError{
 		StatusCode: resp.StatusCode,
 		Kind:       limitKind,
 		Snapshot:   snap,
-		RetryAfter: retryAfterFrom(resp.Header, snap, now),
+		RetryAfter: retryAfter,
+		Until:      now.Add(retryAfter).Truncate(time.Second),
 	}, true
 }
 

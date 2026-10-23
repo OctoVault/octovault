@@ -66,6 +66,9 @@ type OctoRepositoryReconciler struct {
 
 	Checker OrgAccessChecker
 
+	// statusBackoff conflict 가 아닌 status 기록 실패가 이어질 때 재시도 간격을 늘린다.
+	statusBackoff statusBackoff
+
 	// SecretCache 라벨로 범위를 좁힌 Secret 캐시. 자격증명 Secret 을 여기서 먼저 찾는다. nil 이면 API 서버만 쓴다.
 	SecretCache client.Reader
 }
@@ -102,6 +105,13 @@ var (
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+
+	ctx, writes := trackStatusWrites(ctx, &r.statusBackoff, req.String())
+
+	return writes.apply(r.reconcile(ctx, req))
+}
+
+func (r *OctoRepositoryReconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 
 	logger := logf.FromContext(ctx)
 
@@ -158,8 +168,6 @@ func (r *OctoRepositoryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *OctoRepositoryReconciler) validateOrganizationAndMaybeFail(ctx context.Context, o *octovaultv1alpha1.OctoRepository) (ctrl.Result, bool) {
 
-	logger := logf.FromContext(ctx)
-
 	prev := o.Status
 	orgField := strings.TrimSpace(o.Spec.Organization)
 	if orgField == "" || !orgURLPattern.MatchString(orgField) {
@@ -173,12 +181,10 @@ func (r *OctoRepositoryReconciler) validateOrganizationAndMaybeFail(ctx context.
 		if !statusEqual(prev, desired) {
 			o.Status = desired
 
-			if err := r.Status().Update(ctx, o); err != nil {
+			if r.writeStatus(ctx, o) {
 
-				logger.Error(err, "failed to update status to Failed")
+				r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 			}
-
-			r.Recorder.Eventf(o, corev1.EventTypeWarning, "InvalidOrganization", "%s", msg)
 		}
 
 		return ctrl.Result{RequeueAfter: pollInterval}, true
@@ -205,13 +211,6 @@ func (r *OctoRepositoryReconciler) loadCredentialsSecret(ctx context.Context, o 
 		}
 
 		return nil, ctrl.Result{}, err
-	}
-
-	// track syncedSecretName
-	if o.Status.SyncedSecretName != sec.Name {
-
-		o.Status.SyncedSecretName = sec.Name
-		_ = r.Status().Update(ctx, o)
 	}
 
 	return &sec, ctrl.Result{}, nil
@@ -285,6 +284,10 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	desired := prev
 	desired.Phase = octovaultv1alpha1.OctoRepoPhaseSynced
 
+	// 검증에 성공한 Secret 이름은 여기서 함께 기록한다. 따로 쓰면 reconcile 마다
+	// 상태를 두 번 갱신하고 그 사이 충돌 가능성도 생긴다.
+	desired.SyncedSecretName = access.secretName
+
 	// 프로브는 토큰이 유효하고 owner 가 보인다는 것까지만 확인한다. 개별 저장소 접근은
 	// 각 OctoVault 의 fetch 에서 드러나므로, 메시지가 그 이상을 약속하지 않게 한다.
 	reason := "Accessible"
@@ -300,7 +303,11 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
-		_ = r.Status().Update(ctx, o)
+		if !r.writeStatus(ctx, o) {
+
+			// 기록하지 못한 상태를 이벤트로 알리면 상태와 이벤트가 어긋난다. 재시도는 statusWrites 가 정한다.
+			return ctrl.Result{RequeueAfter: pollInterval}, nil
+		}
 
 		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Accessible", "organization %s is accessible; secret=%s", org, access.secretName)
 		r.Recorder.Eventf(o, corev1.EventTypeNormal, "Synced", "organization %s is accessible; secret=%s", org, access.secretName)
@@ -314,6 +321,7 @@ func (r *OctoRepositoryReconciler) setSynced(ctx context.Context, o *octovaultv1
 	return ctrl.Result{RequeueAfter: pollInterval}, nil
 }
 
+// setFailed 실패 상태를 기록한다. 기록에 실패하면 이벤트를 남기지 않고, 재시도는 statusWrites 가 정한다.
 func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1alpha1.OctoRepository, reason, msg string) {
 
 	prev := o.Status
@@ -326,9 +334,24 @@ func (r *OctoRepositoryReconciler) setFailed(ctx context.Context, o *octovaultv1
 	if !statusEqual(prev, desired) {
 
 		o.Status = desired
-		_ = r.Status().Update(ctx, o)
-		r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
+		if r.writeStatus(ctx, o) {
+
+			r.Recorder.Eventf(o, corev1.EventTypeWarning, reason, "%s", msg)
+		}
 	}
+}
+
+// writeStatus 상태를 기록하고 성공 여부를 반환한다. 실패하면 로그를 남기고 statusWrites 에 알린다.
+// 호출자는 실패했을 때 이벤트를 남기지 않아야 한다. 상태와 이벤트가 서로 다른 말을 하게 된다.
+func (r *OctoRepositoryReconciler) writeStatus(ctx context.Context, o *octovaultv1alpha1.OctoRepository) bool {
+	if err := r.Status().Update(ctx, o); err != nil {
+
+		logf.FromContext(ctx).Error(err, "failed to update OctoRepository status", "name", o.Name)
+		noteStatusWriteError(ctx, err)
+		return false
+	}
+
+	return true
 }
 
 // SetupWithManager sets up the controller with the Manager.
