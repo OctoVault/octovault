@@ -22,10 +22,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	octovaultv1alpha1 "github.com/octovault/octovault/api/v1alpha1"
 	awsps "github.com/octovault/octovault/internal/aws/parameter_store"
@@ -68,7 +70,9 @@ const (
 	LabelOVOwnerName = "octovault.it/owner-name" // <name>
 	AnnoOVOwnerFull  = "octovault.it/owner"      // "<ns>/<name>"
 	AnnoOVRetainedBy = "octovault.it/retained-from"
-	FinalizerOV      = "octovault.it/finalizer"
+	// AnnoOVAdopt 이 값이 "true" 인 기존 대상만 OctoVault 가 이어받는다(claimTarget).
+	AnnoOVAdopt = "octovault.it/adopt"
+	FinalizerOV = "octovault.it/finalizer"
 )
 
 func labelSafe(v string) string {
@@ -122,6 +126,10 @@ type valuesDoc struct {
 	} `yaml:"spec"`
 }
 
+// errTargetNotOwned 같은 이름의 ConfigMap/Secret 이 이미 있지만 이 OctoVault 가 소유하지 않은 경우.
+// 덮어쓰면 OctoVault 생성 권한만으로 컨트롤러 권한을 빌려 남의 리소스를 바꿀 수 있게 된다.
+var errTargetNotOwned = errors.New("target exists and is not controlled by this OctoVault")
+
 type GitFetcher interface {
 	// Fetch fetches values.yaml from the given GitHub repository.
 	// org: github.com/<org>, repo: <repo>, ref: <ref> path: path/to/values.yaml
@@ -153,6 +161,9 @@ type OctoVaultReconciler struct {
 
 	AwsSM AwsSecretsProvider
 	AwsPS AwsParamProvider
+
+	// reservedWarned UID → 이미 알린, values.yaml 에서 무시한 octovault.it 키 목록.
+	reservedWarned sync.Map
 }
 
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults,verbs=get;list;watch;create;update;patch;delete
@@ -184,6 +195,9 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				return ctrl.Result{}, err
 			}
 		}
+
+		// UID 별로 남겨 둔 기록을 지워, 지워진 OctoVault 의 항목이 메모리에 쌓이지 않게 한다.
+		r.reservedWarned.Delete(string(ov.UID))
 
 		return ctrl.Result{}, nil
 	}
@@ -242,6 +256,8 @@ func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		return res, nil
 	}
+
+	r.warnReservedKeys(ctx, &ov, doc)
 
 	targetNS := ov.Spec.TargetNamespace
 	if targetNS == "" {
@@ -422,6 +438,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 		appliedHash = sha256OfStringMap(data)
 
 		if err := r.applyConfigMap(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, data, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
+			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
+			if errors.Is(err, errTargetNotOwned) {
+
+				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				return "", ctrl.Result{RequeueAfter: poll}, nil
+			}
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed", fmt.Sprintf("failed to apply configmap: %v", err)))
 			return "", ctrl.Result{}, err
@@ -547,6 +570,13 @@ func (r *OctoVaultReconciler) applyOutput(ctx context.Context, ov *octovaultv1al
 
 		appliedHash = sha256OfBytesMap(bytes)
 		if err := r.applySecret(ctx, ov, targetNS, ov.Spec.TargetName, rev, appliedHash, bytes, doc.Metadata.Labels, doc.Metadata.Annotations); err != nil {
+			// 소유하지 않은 리소스는 재시도해도 결과가 같다. 사용자가 이름을 바꾸거나
+			// 기존 리소스를 정리할 때까지 poll 주기로 물러난다.
+			if errors.Is(err, errTargetNotOwned) {
+
+				r.updateStatusIfChanged(ctx, ov, fail("TargetNotOwned", err.Error()))
+				return "", ctrl.Result{RequeueAfter: poll}, nil
+			}
 
 			r.updateStatusIfChanged(ctx, ov, fail("ApplyFailed",
 				fmt.Sprintf("failed to apply secret: %v", err)))
@@ -629,10 +659,17 @@ func (r *OctoVaultReconciler) applyConfigMap(ctx context.Context, ov *octovaultv
 		return err
 	}
 
+	adopted, owned := claimTarget(&cm.ObjectMeta, ov)
+	if !owned {
+
+		return fmt.Errorf("configmap %s/%s: %w", ns, name, errTargetNotOwned)
+	}
+
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if reflect.DeepEqual(cm.Labels, desiredLabels) &&
+	if !adopted &&
+		reflect.DeepEqual(cm.Labels, desiredLabels) &&
 		reflect.DeepEqual(cm.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(cm.Data, data) {
 		return nil
@@ -678,10 +715,17 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 		return err
 	}
 
+	adopted, owned := claimTarget(&sec.ObjectMeta, ov)
+	if !owned {
+
+		return fmt.Errorf("secret %s/%s: %w", ns, name, errTargetNotOwned)
+	}
+
 	desiredLabels := mergeLabels(sysLabels, userLabels)
 	desiredAnnotations := mergeAnnotations(sysAnnotations, userAnnotations)
 
-	if reflect.DeepEqual(sec.Labels, desiredLabels) &&
+	if !adopted &&
+		reflect.DeepEqual(sec.Labels, desiredLabels) &&
 		reflect.DeepEqual(sec.Annotations, desiredAnnotations) &&
 		reflect.DeepEqual(sec.Data, data) {
 		return nil
@@ -695,6 +739,33 @@ func (r *OctoVaultReconciler) applySecret(ctx context.Context, ov *octovaultv1al
 	sec.Data = data
 
 	return r.Update(ctx, &sec)
+}
+
+// claimTarget 기존 대상을 이 OctoVault 가 관리해도 되는지 판단한다.
+//
+// 이미 controller 이면 그대로 쓴다. controller 가 없고 octovault.it/adopt: "true" 가 붙어 있으면
+// controller ref 를 붙여 이어받는다(adopted=true). 삭제 후 재설치(Helm/Argo)처럼 남겨진 대상을 다시
+// 관리하려면 이 어노테이션을 한 번 붙이면 된다. 이어받으면서 대상의 어노테이션은 values.yaml 기준으로
+// 다시 쓰이므로 adopt 는 한 번만 쓰인다.
+//
+// retained-from 이나 owner 어노테이션 같은 이름 기반 흔적만으로는 이어받지 않는다. 그 흔적은 컨트롤러가
+// 직접 남기므로, 그것만 믿으면 OctoVault 생성 권한만 있는 사용자가 지워진 OctoVault 와 같은 이름으로
+// 만들어, 수정 권한이 없는 Secret 을 덮어쓸 수 있다. adopt 는 그 대상을 수정할 수 있는 주체만 붙일 수
+// 있고, values.yaml 로는 넣을 수 없다(isReservedKey).
+func claimTarget(obj *metav1.ObjectMeta, ov *octovaultv1alpha1.OctoVault) (adopted, owned bool) {
+	if metav1.IsControlledBy(obj, ov) {
+
+		return false, true
+	}
+
+	if metav1.GetControllerOf(obj) != nil || obj.GetAnnotations()[AnnoOVAdopt] != "true" {
+
+		return false, false
+	}
+
+	obj.OwnerReferences = append(obj.OwnerReferences, *metav1.NewControllerRef(ov, ov.GroupVersionKind()))
+
+	return true, true
 }
 
 func (r *OctoVaultReconciler) orphanTargets(ctx context.Context, ov *octovaultv1alpha1.OctoVault) error {

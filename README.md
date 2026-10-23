@@ -172,7 +172,7 @@ spec:
 ```
 - If `metadata.type` is `ConfigMap`, values become `.data[string]`.
 - Only `Text` (default) type is supported.
-- **OctoVault owns the labels and annotations of the resource it creates.** System keys are always preserved even if they are not declared in `values.yaml`. For user/third-party `metadata.labels` and `metadata.annotations`, only keys declared in `values.yaml` are retained; any undeclared keys are removed on every reconcile.
+- **OctoVault owns the labels and annotations of the resource it creates.** System keys are always preserved even if they are not declared in `values.yaml`. For user/third-party `metadata.labels` and `metadata.annotations`, only keys declared in `values.yaml` are retained; any undeclared keys are removed on every reconcile. Keys in the `octovault.it` domain (`octovault.it/...`, `*.octovault.it/...`) are reserved for the controller and are ignored if set in `values.yaml`.
 
 #### Secret
 ```yaml
@@ -328,7 +328,17 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
         - sometimes `read:org` as org policy requires.
 - **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets.
 - **AWS PS** via IRSA/web-identity. Grant `secretsmanager:GetParameter` for referenced values.
-- Operator writes into the target namespace and sets `ownerReferences` to the `OctoVault` for GC.
+- Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
+  `OctoVault` does not delete its targets: the finalizer removes the `ownerReference` first (see below).
+- An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
+  Exception: an existing target with no controller is adopted if it carries `octovault.it/adopt: "true"`.
+  Deleting an `OctoVault` leaves its targets behind (with `octovault.it/retained-from: <ns>/<name>`); to have a
+  recreated `OctoVault` (e.g. after a Helm/Argo reinstall) manage them again, add that annotation to each
+  target, or delete the targets. Targets are never adopted by name alone: otherwise anyone allowed to create an
+  `OctoVault` could overwrite a retained `Secret` they cannot edit. The annotation is consumed on adoption, and
+  it cannot be set through `values.yaml`. For `OctoVault` names longer than 63 characters the `<name>` part of
+  `octovault.it/owner` (and the `octovault.it/owner-name` label) is shortened to its first 31 characters plus a
+  hash.
 
 ---
 
