@@ -5,27 +5,71 @@ metadata:
   name: {{ include "octovault.fullname" . }}
   labels:
     {{- include "octovault.labels" . | nindent 4 }}
+# Mirrors config/rbac/role.yaml, which controller-gen generates from the
+# +kubebuilder:rbac markers. Keep the two in sync.
 rules:
   # CRDs: OctoRepository / OctoVault
   - apiGroups: ["octovault.it"]
-    resources:
-      - octorepositories
-      - octorepositories/status
-      - octorepositories/finalizers
-      - octovaults
-      - octovaults/status
-      - octovaults/finalizers
-    verbs: ["get","list","watch","create","update","patch","delete"]
-  # Core: Secrets, ConfigMaps, Events
+    resources: ["octorepositories", "octovaults"]
+    verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+  - apiGroups: ["octovault.it"]
+    resources: ["octorepositories/status", "octovaults/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["octovault.it"]
+    resources: ["octorepositories/finalizers", "octovaults/finalizers"]
+    verbs: ["update"]
+  # Core: the controller never deletes Secrets or ConfigMaps; targets are
+  # garbage-collected through ownerReferences.
   - apiGroups: [""]
-    resources: ["secrets","configmaps"]
-    verbs: ["get","list","watch","create","update","patch","delete"]
+    resources: ["secrets", "configmaps"]
+    verbs: ["create", "get", "list", "patch", "update", "watch"]
   - apiGroups: [""]
     resources: ["events"]
-    verbs: ["create","patch"]
+    verbs: ["create", "patch"]
   # Startup check that the installed OctoRepository CRD is current (cmd/crd_check.go).
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
     resourceNames: ["octorepositories.octovault.it"]
     verbs: ["get"]
+
+  {{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+  # Secure metrics authenticate and authorize each scrape
+  # (config/rbac/metrics_auth_role.yaml).
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  {{- end }}
+{{- if and .Values.controller.metrics.enabled .Values.controller.metrics.secure }}
+---
+# Bind this to the scraper's ServiceAccount (e.g. Prometheus) so it may read /metrics
+# (config/rbac/metrics_reader_role.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "octovault.fullname" . }}-metrics-reader
+  labels:
+    {{- include "octovault.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+{{- with .Values.metrics.readerSubjects }}
+---
+# Binds the metrics-reader ClusterRole to metrics.readerSubjects (e.g. Prometheus' ServiceAccount).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "octovault.fullname" $ }}-metrics-reader
+  labels:
+    {{- include "octovault.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "octovault.fullname" $ }}-metrics-reader
+subjects:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
 {{- end }}

@@ -178,7 +178,8 @@ type OctoVaultReconciler struct {
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=octovault.it,resources=octovaults/finalizers,verbs=update
 // +kubebuilder:rbac:groups=octovault.it,resources=octorepositories,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets;configmaps;events,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets;configmaps,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *OctoVaultReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 

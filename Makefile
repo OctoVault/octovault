@@ -192,25 +192,25 @@ undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.
 
 .PHONY: helm-sync-crds
 helm-sync-crds: manifests ## Copy generated CRDs into Helm chart.
-	mkdir -p charts/octovault-operator/crds
-	cp -v config/crd/bases/octovault.it_octorepositories.yaml charts/octovault-operator/crds/
-	cp -v config/crd/bases/octovault.it_octovaults.yaml charts/octovault-operator/crds/
+	mkdir -p charts/octovault/crds
+	cp -v config/crd/bases/octovault.it_octorepositories.yaml charts/octovault/crds/
+	cp -v config/crd/bases/octovault.it_octovaults.yaml charts/octovault/crds/
 
 .PHONY: helm-lint
 helm-lint:
-	helm lint charts/octovault-operator
+	helm lint charts/octovault
 
 .PHONY: helm-template
 helm-template:
-	helm template octovault charts/octovault-operator --namespace octovault-system | head -200
+	helm template octovault charts/octovault --namespace octovault-system | head -200
 
 .PHONY: helm-package
 helm-package: helm-sync-crds
-	helm package charts/octovault-operator -d dist
+	helm package charts/octovault -d dist
 
 .PHONY: helm-install
 helm-install: helm-sync-crds
-	helm upgrade --install octovault charts/octovault-operator \
+	helm upgrade --install octovault charts/octovault \
 	  --namespace octovault-system --create-namespace
 
 .PHONY: helm-uninstall

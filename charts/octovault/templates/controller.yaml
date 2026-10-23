@@ -31,6 +31,10 @@ spec:
             {{- if .Values.controller.metrics.enabled }}
             - "--metrics-secure={{ .Values.controller.metrics.secure }}"
             - "--metrics-bind-address=:{{ .Values.controller.metrics.port }}"
+            {{- if and .Values.controller.metrics.secure .Values.metrics.existingSecret }}
+            # Serve the mounted certificate instead of a generated self-signed one.
+            - "--metrics-cert-path={{ .Values.metrics.certPath }}"
+            {{- end }}
             {{- else }}
             - "--metrics-bind-address=0"
             {{- end }}

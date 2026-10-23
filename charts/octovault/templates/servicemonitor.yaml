@@ -6,7 +6,9 @@ metadata:
   namespace: {{ .Release.Namespace }}
   labels:
     {{- include "octovault.labels" . | nindent 4 }}
-    {{- toYaml .Values.prometheus.serviceMonitor.labels | nindent 4 }}
+    {{- with .Values.prometheus.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
 spec:
   endpoints:
     - port: {{ ternary "https-metrics" "http-metrics" .Values.controller.metrics.secure }}
@@ -14,6 +16,11 @@ spec:
       scrapeTimeout: {{ .Values.prometheus.serviceMonitor.scrapeTimeout }}
       {{- if .Values.controller.metrics.secure }}
       scheme: {{ .Values.prometheus.serviceMonitor.scheme }}
+      # Secure metrics require an authenticated scrape; the scraper's ServiceAccount
+      # needs the <fullname>-metrics-reader ClusterRole. bearerTokenFile is deprecated
+      # in prometheus-operator, but `authorization` only takes a Secret reference and
+      # cannot point at the scraper's own projected ServiceAccount token.
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       {{- with .Values.prometheus.serviceMonitor.tlsConfig }}
       tlsConfig:
         {{- toYaml . | nindent 8 }}

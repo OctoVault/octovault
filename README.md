@@ -243,7 +243,7 @@ spec:
 
 ### Helm
 
-The chart (`charts/octovault-operator`) includes CRDs in its `crds/` folder; Helm will install them automatically (Helm ≥3.2).
+The chart (`charts/octovault`) includes CRDs in its `crds/` folder; Helm will install them automatically (Helm ≥3.2).
 
 ```
 helm upgrade --install --create-namespace --namespace=octovault-system \
@@ -253,8 +253,8 @@ helm upgrade --install --create-namespace --namespace=octovault-system \
 Common values:
 ```yaml
 image:
-  repository: ghcr.io/octovault/octovault
-  tag: v0.0.1
+  repository: ghcr.io/octovault/octovault-operator
+  tag: v0.0.3-rc2
 controller:
   probes:
     healthz: ":8081"
@@ -266,7 +266,7 @@ controller:
   env:
     GIT_CRED_TTL: "10m"  # PAT verification cache TTL / OctoRepository recheck period
     GIT_API_URL: ""      # default https://api.github.com
-    GIT_REF: ""          # global default ref (fallback)
+    GIT_REF: "main"      # global default ref (fallback); set "" to use each repository's default branch
     GIT_REVISION_FROM_COMMIT: "false"  # true adds one /commits request per poll
     AWS_REGION: ""       # empty → AWS SDK default chain (IRSA)
     AWS_SM_TTL: "3m"     # AWS SM cache TTL. Default 1m
@@ -339,8 +339,8 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
         - public repos only → PAT optional,
         - private repo read → `repo`,
         - sometimes `read:org` as org policy requires.
-- **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets.
-- **AWS PS** via IRSA/web-identity. Grant `secretsmanager:GetParameter` for referenced values.
+- **AWS SM** via IRSA/web-identity. Grant `secretsmanager:GetSecretValue` for referenced secrets, plus `kms:Decrypt` on the key if a secret uses a customer-managed KMS key.
+- **AWS PS** via IRSA/web-identity. Grant `ssm:GetParameter` for referenced parameters, plus `kms:Decrypt` on the key for `SecureString` parameters encrypted with a customer-managed KMS key and read with `withDecryption: true` (the default `aws/ssm` key needs no extra grant).
 - Operator writes into the target namespace and sets an `ownerReference` to the `OctoVault`. Deleting the
   `OctoVault` does not delete its targets: the finalizer removes the `ownerReference` first (see below).
 - An existing `ConfigMap`/`Secret` with the target name that is not controlled by the same `OctoVault` is never overwritten; the `OctoVault` fails with reason `TargetNotOwned` instead.
@@ -359,7 +359,24 @@ reset instead of continuing to poll. Status moves to `Failed` with reason `RateL
 
 - Conditions and rich Status on both CRDs.
 - Kubernetes Events for error/success paths.
-- Prometheus metrics endpoint (HTTP/HTTPS) with optional authz.
+- Prometheus metrics endpoint (HTTP/HTTPS) with optional authz. With `controller.metrics.secure: true` (the
+  default), scrapes must present a ServiceAccount token: bind the chart's `<fullname>-metrics-reader`
+  ClusterRole (`octovault-metrics-reader` with the default `fullnameOverride`) to your Prometheus
+  ServiceAccount, for example by listing it in `metrics.readerSubjects` so the chart creates the binding. The
+  chart's ServiceMonitor sends the token.
+- Secure metrics are served over TLS, so Prometheus must also trust the certificate:
+  - **Your own certificate (recommended):** put `tls.crt`/`tls.key` in a Secret and set
+    `metrics.existingSecret`; the controller then serves it (`--metrics-cert-path`). Earlier chart
+    versions mounted this Secret but never used it, so if you already set `metrics.existingSecret`, make
+    sure the Secret really has `tls.crt` and `tls.key`: the controller now exits at startup if it cannot
+    load them. Point
+    `prometheus.serviceMonitor.tlsConfig` at the issuing CA and set `serverName` to the metrics Service
+    (`<fullname>-metrics.<namespace>.svc`).
+  - **Default self-signed certificate:** without `metrics.existingSecret` the controller generates a
+    self-signed certificate, which Prometheus rejects ("x509: certificate signed by unknown authority")
+    unless you set `prometheus.serviceMonitor.tlsConfig.insecureSkipVerify: true`. That skips server
+    verification while still sending the ServiceAccount token, so prefer your own certificate outside
+    test clusters.
 
 ### GitHub rate-limit metrics
 
@@ -389,8 +406,10 @@ Repo layout:
     api/v1alpha1/                 # CRD Go types
     internal/controller/          # reconcilers
     internal/github/              # GitHub fetcher
-    internal/awssm/               # AWS Secrets Manager provider
-    charts/octovault-operator/    # Helm chart (includes CRDs)
+    internal/aws/secret_manager/  # AWS Secrets Manager provider
+    internal/aws/parameter_store/ # AWS SSM Parameter Store provider
+    internal/metrics/             # Prometheus metrics
+    charts/octovault/             # Helm chart (includes CRDs; `make helm-sync-crds` refreshes them)
 
 Make targets:
 
