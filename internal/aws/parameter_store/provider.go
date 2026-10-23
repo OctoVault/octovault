@@ -5,10 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/octovault/octovault/internal/aws/jsonkey"
+	"github.com/octovault/octovault/internal/aws/ttlcache"
+	ovmetrics "github.com/octovault/octovault/internal/metrics"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -26,19 +27,24 @@ type Meta struct {
 
 type Provider struct {
 	client *ssm.Client
-
-	mu    sync.RWMutex
-	ttl   time.Duration
-	cache map[string]cacheEntry
+	cache  *ttlcache.Cache[cacheEntry]
 }
 
 type cacheEntry struct {
 	value []byte
 	meta  Meta
-	exp   time.Time
 }
 
-func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*config.LoadOptions) error) (*Provider, error) {
+// CacheOptions 조회 결과 캐시 설정.
+type CacheOptions struct {
+	// TTL 0 이하면 1분.
+	TTL time.Duration
+
+	// MaxEntries 0 이하면 ttlcache.DefaultMaxEntries.
+	MaxEntries int
+}
+
+func New(ctx context.Context, region string, cache CacheOptions, optFns ...func(*config.LoadOptions) error) (*Provider, error) {
 
 	var opts []func(*config.LoadOptions) error
 	opts = append(opts, optFns...)
@@ -54,6 +60,7 @@ func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*
 		return nil, fmt.Errorf("load aws config: %w", err)
 	}
 
+	ttl := cache.TTL
 	if ttl <= 0 {
 
 		ttl = time.Minute
@@ -61,8 +68,11 @@ func New(ctx context.Context, region string, ttl time.Duration, optFns ...func(*
 
 	return &Provider{
 		client: ssm.NewFromConfig(cfg),
-		ttl:    ttl,
-		cache:  make(map[string]cacheEntry),
+		cache: ttlcache.New(ttl,
+			ttlcache.WithMaxEntries[cacheEntry](cache.MaxEntries),
+			ttlcache.WithEvictHook[cacheEntry](func(n int) {
+				ovmetrics.AWSCacheEvictionsTotal.WithLabelValues("AwsParameterStore").Add(float64(n))
+			})),
 	}, nil
 }
 
@@ -72,21 +82,19 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 		return nil, Meta{}, errors.New("parameter name required")
 	}
 
-	now := time.Now()
-
 	// 복호화 여부에 따라 응답 값이 달라지므로(SecureString 은 암호문/평문) 캐시 키에 포함한다.
-	key := cacheKey(name, withDecryption)
+	ent, err := p.cache.Get(ctx, cacheKey(name, withDecryption), func(ctx context.Context) (cacheEntry, error) {
+		return p.fetch(ctx, name, withDecryption)
+	})
+	if err != nil {
 
-	// 캐시 조회
-	p.mu.RLock()
-	if ent, ok := p.cache[key]; ok && ent.exp.After(now) {
-
-		p.mu.RUnlock()
-
-		return ent.value, ent.meta, nil
+		return nil, Meta{}, err
 	}
 
-	p.mu.RUnlock()
+	return ent.value, ent.meta, nil
+}
+
+func (p *Provider) fetch(ctx context.Context, name string, withDecryption bool) (cacheEntry, error) {
 
 	// SSM 호출
 	out, err := p.client.GetParameter(ctx, &ssm.GetParameterInput{
@@ -101,17 +109,17 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 
 		switch {
 		case errors.As(err, &nf):
-			return nil, Meta{}, fmt.Errorf("aws ssm: parameter %q not found", name)
+			return cacheEntry{}, fmt.Errorf("aws ssm: parameter %q not found", name)
 		case errors.As(err, &iae):
-			return nil, Meta{}, fmt.Errorf("aws ssm: invalid kms key for %q: %v", name, err)
+			return cacheEntry{}, fmt.Errorf("aws ssm: invalid kms key for %q: %v", name, err)
 		default:
-			return nil, Meta{}, fmt.Errorf("aws ssm: get parameter: %w", err)
+			return cacheEntry{}, fmt.Errorf("aws ssm: get parameter: %w", err)
 		}
 	}
 
 	if out.Parameter == nil || out.Parameter.Value == nil {
 
-		return nil, Meta{}, fmt.Errorf("aws ssm: parameter %q has no value", name)
+		return cacheEntry{}, fmt.Errorf("aws ssm: parameter %q has no value", name)
 	}
 
 	meta := Meta{
@@ -122,14 +130,7 @@ func (p *Provider) GetParameter(ctx context.Context, name string, withDecryption
 		LastModifiedStr: "",
 	}
 
-	val := []byte(aws.ToString(out.Parameter.Value))
-
-	// 캐시 저장
-	p.mu.Lock()
-	p.cache[key] = cacheEntry{value: val, meta: meta, exp: now.Add(p.ttl)}
-	p.mu.Unlock()
-
-	return val, meta, nil
+	return cacheEntry{value: []byte(aws.ToString(out.Parameter.Value)), meta: meta}, nil
 }
 
 func cacheKey(name string, withDecryption bool) string {

@@ -12,6 +12,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	dto "github.com/prometheus/client_model/go"
+
+	ovmetrics "github.com/octovault/octovault/internal/metrics"
 
 	"github.com/stretchr/testify/require"
 )
@@ -45,7 +48,7 @@ func newProviderWithHTTP(t *testing.T, handler rtFunc, ttl time.Duration) *Provi
 	t.Helper()
 	cli := &http.Client{Transport: handler}
 	ctx := context.Background()
-	p, err := New(ctx, "us-east-1", ttl,
+	p, err := New(ctx, "us-east-1", CacheOptions{TTL: ttl},
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
 		config.WithHTTPClient(cli),
 	)
@@ -297,4 +300,39 @@ func TestProvider_Cache_Expires(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, 2, meta3.Version)
 	require.Equal(t, 2, call)
+}
+
+// MaxEntries 를 넘으면 밀려나고, 그 수가 지표로 나가야 한다.
+func TestProvider_CacheSizeIsConfigurableAndEvictionsAreCounted(t *testing.T) {
+	handler := rtFunc(func(r *http.Request) (*http.Response, error) {
+		m := readJSONBody(t, r)
+
+		return jsonResp(200, map[string]any{
+			"Parameter": map[string]any{"Name": m["Name"], "Type": "String", "Value": "v", "Version": 1},
+		}, nil), nil
+	})
+
+	cli := &http.Client{Transport: handler}
+	p, err := New(context.Background(), "us-east-1", CacheOptions{TTL: time.Minute, MaxEntries: 2},
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("AKID", "SECRET", "")),
+		config.WithHTTPClient(cli),
+	)
+	require.NoError(t, err)
+
+	counter := ovmetrics.AWSCacheEvictionsTotal.WithLabelValues("AwsParameterStore")
+	value := func() float64 {
+		var m dto.Metric
+		require.NoError(t, counter.Write(&m))
+
+		return m.GetCounter().GetValue()
+	}
+	before := value()
+
+	for _, name := range []string{"/a", "/b", "/c", "/d"} {
+		_, _, err := p.GetParameter(context.Background(), name, false)
+		require.NoError(t, err)
+	}
+
+	require.Equal(t, 2, p.cache.Len())
+	require.Equal(t, before+2, value())
 }

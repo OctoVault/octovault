@@ -317,22 +317,6 @@ func TestRetryAfter_ClampsAbsurdReset(t *testing.T) {
 	require.Equal(t, MaxRateLimitBackoff, got)
 }
 
-func TestLRU_EvictsOldestBeyondCapacity(t *testing.T) {
-
-	c := newLRU[string](2)
-	c.put("a", "1")
-	c.put("b", "2")
-	c.put("c", "3")
-
-	_, ok := c.get("a")
-	require.False(t, ok, "가장 오래된 항목이 축출돼야 한다")
-
-	for _, k := range []string{"b", "c"} {
-		_, ok := c.get(k)
-		require.True(t, ok, fmt.Sprintf("%s 는 남아있어야 한다", k))
-	}
-}
-
 // Fetcher 와 캐시는 MaxConcurrentReconciles > 1 일 때 여러 reconcile 이 공유한다.
 // -race 와 함께 돌려 캐시 접근에 데이터 레이스가 없는지 확인한다.
 func TestFetcher_ConcurrentFetchesShareCacheSafely(t *testing.T) {

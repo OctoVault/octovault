@@ -60,6 +60,7 @@ controller:
     AWS_REGION: ""    # if empty, will use default region from aws sdk by itself (recommended)
     AWS_SM_TTL: "3m"
     AWS_PS_TTL: "3m"
+    AWS_CACHE_MAX_ENTRIES: "1024" # per provider; raise if octovault_aws_cache_evictions_total keeps growing
 
   extraEnv: []             # [{name: FOO, value: BAR}, ...]
   extraVolumeMounts: []

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/octovault/octovault/internal/lru"
 	ovmetrics "github.com/octovault/octovault/internal/metrics"
 )
 
@@ -63,7 +64,7 @@ type Fetcher struct {
 	userAgent          string
 	revisionFromCommit bool
 	conditional        bool
-	cache              *lru[etagEntry]
+	cache              *lru.Cache[etagEntry]
 	now                func() time.Time
 
 	// limited 토큰 지문 → rate limit 이 풀리는 시각까지의 마지막 거절.
@@ -117,7 +118,7 @@ func NewFetcher(opts Options) *Fetcher {
 		userAgent:          ua,
 		revisionFromCommit: opts.RevisionFromCommit,
 		conditional:        !opts.DisableConditionalRequests,
-		cache:              newLRU[etagEntry](opts.CacheEntries),
+		cache:              lru.New[etagEntry](opts.CacheEntries),
 		now:                nowFn,
 		limited:            map[string]*RateLimitError{},
 		limitedAt:          map[string]time.Time{},
@@ -325,7 +326,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", f.userAgent)
 
-	cached, hasCached := f.cache.get(key)
+	cached, hasCached := f.cache.Get(key)
 	if f.conditional && hasCached {
 
 		req.Header.Set("If-None-Match", cached.etag)
@@ -354,7 +355,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 
 		if etag := strings.TrimSpace(resp.Header.Get("ETag")); etag != "" {
 
-			f.cache.put(key, etagEntry{etag: etag, body: body})
+			f.cache.Put(key, etagEntry{etag: etag, body: body})
 		}
 
 		return body, nil
@@ -368,7 +369,7 @@ func (f *Fetcher) doJSON(ctx context.Context, cr contentRequest) ([]byte, error)
 		}
 
 		// ETag 는 보냈지만 되돌려줄 바디가 없는 상태. 캐시를 버리고 다음 폴링에서 200 을 받는다.
-		f.cache.drop(key)
+		f.cache.Drop(key)
 
 		return nil, errors.New("304 not modified but no cached body available")
 

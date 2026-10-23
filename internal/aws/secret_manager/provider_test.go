@@ -14,6 +14,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+
+	"github.com/octovault/octovault/internal/aws/ttlcache"
 )
 
 // ---- 테스트용 HTTP 클라이언트 ----
@@ -112,8 +114,7 @@ func newTestProvider(t *testing.T, fh *fakeHTTPClient, ttl time.Duration) *Provi
 
 	p := &Provider{
 		client: sm.NewFromConfig(cfg),
-		ttl:    ttl,
-		cache:  make(map[string]cacheEntry),
+		cache:  ttlcache.New[cacheEntry](ttl),
 	}
 	return p
 }
