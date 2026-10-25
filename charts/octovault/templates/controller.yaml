@@ -55,8 +55,11 @@ spec:
               value: "{{ .Values.controller.env.GIT_REF }}"
             - name: GIT_REVISION_FROM_COMMIT
               value: "{{ .Values.controller.env.GIT_REVISION_FROM_COMMIT }}"
+            {{- /* 비어 있으면 렌더링하지 않는다. extraEnv 로 같은 이름을 넣던 기존 설정과 중복되지 않도록. */}}
+            {{- with .Values.controller.env.GIT_SCHEMA_FILE }}
             - name: GIT_SCHEMA_FILE
-              value: "{{ .Values.controller.env.GIT_SCHEMA_FILE }}"
+              value: {{ . | quote }}
+            {{- end }}
             - name: AWS_REGION
               value: "{{ .Values.controller.env.AWS_REGION }}"
             - name: AWS_SM_TTL
